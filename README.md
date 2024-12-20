@@ -1,6 +1,9 @@
 # Project Overview
 Our data integrated connectomic data from the hemibrain dataset and the FAFB dataset. The functional data comes from the DoOR database. The behavioral screening results are from Knaden et al., 2012.
 
+Data archived url:
+https://drive.google.com/drive/folders/1AtFL13jMt5KM6ht_i9Sfs7Lm2Fhu30BP?usp=sharing
+
 # References:
 ## Behavioral Data:
 - Knaden, M., Strutz, A., Ahsan, J., Sachse, S., & Hansson, B. S. (2012). Spatial representation of odorant valence in an insect brain. Cell reports, 1(4), 392-399.
