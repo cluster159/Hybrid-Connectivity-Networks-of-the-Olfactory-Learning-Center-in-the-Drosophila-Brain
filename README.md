@@ -1,4 +1,7 @@
 # Project Overview
+For data, including connection tables etc., please visit: https://doi.org/10.5061/dryad.jh9w0vtnc
+However, code settings please keep updated with the latest version in github repository for better accessibility.
+
 Our data integrated connectomic data from the hemibrain dataset and the FAFB dataset. The functional data comes from the DoOR database. The behavioral screening results are from Knaden et al., 2012.
 Materials for the paper is uploading, please contact for further information: charngchingche@lolab-nthu.org
 
