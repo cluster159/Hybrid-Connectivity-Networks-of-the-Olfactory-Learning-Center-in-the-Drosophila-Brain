@@ -3,8 +3,8 @@ from pandas import DataFrame as Df
 import numpy as np
 import seaborn as sns
 from matplotlib import pyplot as plt
-import generate_connection_v3 as gc
-from generate_connection_v3 import ConnectionSetting
+import generate_connection as gc
+from generate_connection import ConnectionSetting
 import pickle
 import os
 from scipy import stats
@@ -23,12 +23,27 @@ import shutil
 from scipy.stats import linregress
 import pingouin as pg
 from sklearn.decomposition import PCA
-import platform
 import trimesh
 import pyvista as pv
 import vtk
 import analysis_tool
 from analysis_tool import Anatomical_analysis
+from scipy.stats import f_oneway
+from statsmodels.stats.multicomp import pairwise_tukeyhsd
+import read_DoOR
+from mpl_toolkits.mplot3d import Axes3D  # Import is optional with recent Matplotlib versions
+from scipy.stats import kruskal
+import scikit_posthocs as sp  # For post-hoc Dunn's test
+from scipy.stats import mannwhitneyu
+import scikit_posthocs as sp
+from MGPN_analysis import *
+from scipy.stats import kruskal
+from behavioral_analysis import *
+from scipy.stats import friedmanchisquare
+from function_data_processing import *
+from simulation_process import *
+from PN_to_KC_coding_simulation import *
+from Analyze_result import *
 
 plt.rcParams['font.family'] = 'Arial'
 
@@ -197,7 +212,7 @@ class figure_manager():
                                                   synapse_related_to_KC_1=True, synapse_related_to_KC_2=True,
                                                   clustermap=False):
         '''
-        fig. s9, fig. s10, fig. s15, fig. s16,
+        fig. s14, fig. s15, fig. s19, fig. s21,
         :param neuropil_list: 'AL_ALL(R)', "CA(R)", 'LH(R)'
         :param t1_list: "Glomerulus" PN glomerulus, "Cluster": PN cluster, "major": KC major class, "minor": KC subclass
         :param t2_list: "Glomerulus" PN glomerulus, "Cluster": PN cluster, "major": KC major class, "minor": KC subclass
@@ -224,7 +239,7 @@ class figure_manager():
                             synapse_related_to_KC_2 = self.check_p_related_to_KC(synapse_related_to_KC_2, t2, neuropil,
                                                                                  d2)
 
-                            a.analyze_spatial_distribution_bar(t1=t1, d1=d1, t2=t2, d2=d2,
+                            self.a.analyze_spatial_distribution_bar(t1=t1, d1=d1, t2=t2, d2=d2,
                                                                                neuropil=neuropil,
                                                                                datatype="JS",
                                                                                synapse_related_to_KC_1=synapse_related_to_KC_1,
@@ -270,7 +285,7 @@ class figure_manager():
 
     def get_relationship_spatial_connection_preference(self):
         '''
-        fig. s12
+        fig. s18
         Preference is defined as the (real data - shuffled_mean)/ shuffled_std
         :return:
         '''
@@ -283,19 +298,127 @@ class figure_manager():
         '''
         self.a.plot_spatial_input_weight_ratio()
 
+def MGPN_analysis_execution():
+    print("Get MGPN number")
+    get_MGPN_number()
+    print("Get MGPN output synapses")
+    quantify_MGPN_connected_with_KC_synapses()
+    print("Get MGPN-Glomerulus correlation")
+    analysis_for_all_MGPN_ORN_PN()
+    analysis_for_KC_connected_MGPN_ORN_PN()
+
+def behavioral_preferences_analysis_execution():
+    print("Get top activated glomerulus ranking of odors with valence")
+    for odor_type in ['neutral','aversive','attractive']:
+        for rank_num in range(1,6):
+            get_behavior_with_odor_glomerulus_ranking(OdorType=odor_type, rank_num=rank_num)
+    compare_glomerulus_across_ranking()
+    print("Compare activity sum of aversive and attractive")
+    compare_cluster_activity_for_aversive_and_attractive_odors()
+    print("Get correlation of behaviroal preference ranking and summed activity ranking")
+    analyze_ranking_correlation_behavior_activity()
+
+def analyze_spatial_innervation_preference_of_FAFB():
+    a = Anatomical_analysis(template='FAFB')
+    random_num = 30
+    a.analyze_FAFB_spatial_distribution(t1='Glomerulus',t2='major',d1='synapse',d2="synapse",random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="Cluster",t2='Cluster',d1='synapse',d2='synapse',random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="major",t2='major',d1='synapse',d2='synapse',random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="Cluster",t2='major',d1='synapse',d2='synapse',random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1='Glomerulus',t2='major',d1='neurite',d2="neurite",random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1='Glomerulus',t2='major',d1='TP',d2="TP",random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="Cluster",t2='Cluster',d1='neurite',d2='neurite',random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="Cluster",t2='Cluster',d1='TP',d2='TP',random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="major",t2='major',d1='neurite',d2='neurite',random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="major",t2='major',d1='TP',d2='TP',random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="Cluster",t2='major',d1='neurite',d2='neurite',random_num=random_num,slice_num=10,save=True)
+    a.analyze_FAFB_spatial_distribution(t1="Cluster",t2='major',d1='TP',d2='TP',random_num=random_num,slice_num=10,save=True)
+    
+def plot_FAFB_density(target='TP'):
+    a = Anatomical_analysis(template='FAFB')
+    a.plot_FAFB_PN_KC_density(target=target)
+
+def plot_FAFB_neuron():
+    a = Anatomical_analysis(template='FAFB')
+    a.plot_FAFB_neuron()
+
+def analyze_calcium_response():
+    print("Compare observed and predicted lobe response difference")
+    compare_activity_difference()
+    print("Compare sub-regions difference along gamma lobe")
+    compare_subregions()
+
+def analyze_spatial_innervation_FlyEM(re_calculate=False):
+    plot_result = figure_manager() ## each function indicates the related figure
+    if re_calculate:
+        plot_result.init_get_spatial_distribution_dict(re_init=re_calculate)
+
+    plot_result.get_bouton_connection_number_ratio()
+    plot_result.get_spatial_distribution_preference(t1_list=['Cluster'],t2_list=['Cluster'],d1_list=['neuron'],d2_list=['neuron'])
+    plot_result.init_get_spatial_distribution_dict()
+    plot_result.visualize_glomerulus_cluster_AL()
+    plot_result.visualize_synaptic_distribution()
+    plot_result.visualize_spatial_distribution_density(Classification_type='Cluster',data_type='neuron',neuropil='CA(R)')
+    plot_result.compare_group_connection_num_weight()
+    plot_result.get_spatial_distribution_preference()
+    plot_result.get_DV_ratio_comparison(t1='Cluster')
+    plot_result.get_synapse_spatial_similarity()
+    plot_result.get_relationship_spatial_connection_preference()
+    plot_result.get_spatial_input_weight_ratio()
+
+def analyze_FAFB_spatial():
+    a = Anatomical_analysis(template='FAFB')
+    a.collect_FAFB_PN_neurite_all_neuropil() #pre-process for neurite
+    print("FAFB Neurite density, both PNs and KCs are shown, to see specific category, please manually hide others")
+    a.plot_FAFB_PN_KC_density(target='neurite')
+    print("FAFB synapse density, both PNs and KCs are shown, to see specific category, please manually hide others")
+    a.plot_FAFB_PN_KC_density(target='synapse')
+
+def simulation_of_artificial_odor(remake=False):
+    if remake == True:
+        network = gc.load_network()
+        odor_stimulation = Artificial_Odor()
+        odor_stimulation.draw_odor_PN = False
+        for activated_glomerulus_number in [4,7]:
+            # odor_stimulation.get_PN_activity_artificial_shuffled_odor_glomerulus(network,activated_glomerulus_number=activated_glomerulus_number)
+            # for ratio in [0.75,0.5]:
+            #     odor_stimulation.get_PN_activity_artificial_ingroup_preference(network,activated_glomerulus_number=activated_glomerulus_number,group_number=5,ingroup_ratio=ratio)
+            odor_stimulation.get_PN_activity_artificial_random_odor_glomerulus(network,activated_glomerulus_number=activated_glomerulus_number,group_number=5)
+            # odor_stimulation.get_PN_activity_artificial_biased_cluster_glomerulus(network,activated_glomerulus_number=[activated_glomerulus_number-2,1],group_number=5)
+            odor_stimulation.get_PN_activity_artificial_single_cluster_glomerulus(network,activated_glomerulus_number=activated_glomerulus_number,group_number=5)
+        save_artificial_odor(odor_stimulation)
+        print(odor_stimulation.Odor_collection_dict['single'])
+    exp = simulation_experiment()
+    print(len(exp.network.G_list))
+    # exp.more_glomerulus = True
+    exp.KC_reaction_map = False
+    exp.parallel_simulation(connection_type='binary',target_connection_style='FlyEM')
+
+def analyze_artificial_simulation():
+    result_analyzer = Result_Analyzer()
+    result_analyzer.load_simulation_data()
+    result_analyzer.analyze_activation_ratio(result_analyzer.network.Subtype_to_KCid.keys(),connection_type='binary')
+    result_analyzer.analyze_dimensionality(connection_type='binary')
+
+def artificial_odor_experiments():
+    simulation_of_artificial_odor()
+    analyze_artificial_simulation()
 
 
 if __name__ == '__main__':
-    a = Anatomical_analysis()
-    plot_result = figure_manager() ## each function indicates the related figure
-    # plot_result.init_get_spatial_distribution_dict()
-    # plot_result.visualize_glomerulus_cluster_AL()
-    # plot_result.visualize_synaptic_distribution()
-    # plot_result.visualize_spatial_distribution_density(Classification_type='Cluster',data_type='neuron',neuropil='CA(R)')
-    # plot_result.compare_group_connection_num_weight()
-    # plot_result.get_spatial_distribution_preference()
-    # plot_result.get_DV_ratio_comparison(t1='Cluster')
-    # plot_result.get_synapse_spatial_similarity()
-    # plot_result.get_relationship_spatial_connection_preference()
-    # plot_result.get_spatial_input_weight_ratio()
-    # plot_result.get_bouton_connection_number_ratio()
+    print("We will keep updating our code.\n If you want to access the latest version, please get codes from https://github.com/cluster159/-Hybrid-Neural-Networks-in-the-Mushroom-Body-Drive-Olfactory-Preference-in-Drosophila")
+    # # # spatial
+    analyze_spatial_innervation_FlyEM()
+    # # # function
+    analyze_calcium_response()
+    # # # behavior
+    behavioral_preferences_analysis_execution()
+    # # # MGPN
+    MGPN_analysis_execution()
+    # # # FAFB spatial
+    analyze_FAFB_spatial()
+    # # # artificial simulation
+    artificial_odor_experiments()
+    #
+
+

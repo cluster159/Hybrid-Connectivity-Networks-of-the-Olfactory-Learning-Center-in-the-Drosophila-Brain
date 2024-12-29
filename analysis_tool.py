@@ -3,20 +3,18 @@ from pandas import DataFrame as Df
 import numpy as np
 import seaborn as sns
 from matplotlib import pyplot as plt
-import generate_connection_v3 as gc
-from generate_connection_v3 import ConnectionSetting
+import generate_connection as gc
+from generate_connection import ConnectionSetting
 import pickle
 import os
 from scipy import stats
 from mayavi import mlab
 from tvtk.api import tvtk
-import navis
 from scipy.spatial.distance import jensenshannon
 from scipy.special import rel_entr
 from collections import defaultdict, Counter
 import trimesh
 import trimesh.proximity as proximity
-from scipy.special import kl_div
 import copy
 import random as rd
 import shutil
@@ -25,19 +23,79 @@ import pingouin as pg
 from sklearn.decomposition import PCA
 import platform
 import trimesh
-import pyvista as pv
-import vtk
 
 plt.rcParams['font.family'] = 'Arial'
 
+def Depth_first_search(start_id,sequence,son_list):
+    sequence.append(start_id)
+    for node in son_list[start_id]:
+        sequence = Depth_first_search(node,sequence,son_list)
+    return sequence
+
+def calculate_euclidean_length(a,b):
+    return np.sum([(a[i]-b[i])**2 for i in range(len(a))])**0.5
+
+def bfs(son_list, start=0):
+    candidate_list=[start]
+    seq_list = [start]
+    while len(candidate_list)!=0:
+        new_candidate_list = []
+        for ptr in candidate_list:
+            new_candidate_list += son_list[ptr]
+        # new_candidate_list = [son_list[ptr] for ptr in candidate_list]
+        seq_list = seq_list + new_candidate_list
+        candidate_list = new_candidate_list
+    return seq_list
+
+def Depth_first_search_iterative(start_node, son_list):
+    stack = [start_node]
+    visited = set()
+    sequence = []
+
+    while stack:
+        node = stack.pop()
+        if node not in visited:
+            visited.add(node)
+            sequence.append(node)
+            stack.extend(son_list[node])
+    return sequence
+
+def get_path_nodes(parent_list, xyz_list, son_list):
+    # if isinstance(path_nodes,type(False)):
+    #     path_nodes = [0 for _ in range(len(xyz_list))]
+    start_point_collection = [i for i in range(len(parent_list)) if parent_list[i]<0]
+    seq_list = []
+    for start_point in start_point_collection:
+        seq_list = seq_list + bfs(son_list,start_point)
+    # print('CHECK',len(seq_list),len(xyz_list))
+    # input()
+    path_nodes = [0 for _ in range(len(xyz_list))]
+    for i in seq_list:
+        if parent_list[i]<0:
+            path_nodes[i] = 0
+        else:
+            path_nodes[i] = calculate_euclidean_length(xyz_list[i],xyz_list[parent_list[i]]) + path_nodes[parent_list[i]]
+    return np.array(path_nodes)
+
 class Anatomical_analysis():
-    def __init__(self, root='Result/', threshold=3, neuropil_path='hemibrain_data/FlyEM_neuropil/'):
+    def __init__(self, root='Result/', threshold=3, neuropil_path='hemibrain_data/FlyEM_neuropil/',template='FlyEM'):
         if not os.path.isdir(root): os.mkdir(root)
+        if template == 'FAFB':
+            neuropil_path = 'FAFB_neuropil/'
+        elif template == "FlyCircuit":
+            neuropil_path = 'FlyCircuit_neuropil/'
+            self.swc_path = 'C:/Users/cockr/Project/eFlyPlotv2p1/eFlyPlotv2p1/Data/FlyCircuit_skeleton/'
+
+        elif template == 'FlyEM':
+            neuropil_path = 'hemibrain_data/FlyEM_neuropil/'
+            self.swc_path = 'hemibrain_data/FlyEM_skeleton/'
+
+        self.template = template
         self.root = root
         self.neuropil_path = neuropil_path
         self.tmp_file_path = 'tmp_files/'
-        self.swc_path = 'hemibrain_data/FlyEM_skeleton/'
-        self.swc_source_path = "D:/eFlyPlotv2p1/Data/FlyEM_skeleton/"
+        # self.swc_source_path = "D:/eFlyPlotv2p1/Data/FlyEM_skeleton/"
+        self.swc_source_path = 'C:/Users/cockr/Project/eFlyPlotv2p1/eFlyPlotv2p1/Data/FlyEM_skeleton/'
         self.PN_to_KC_weight_threshold = threshold
         self.network = gc.load_network()
         self.Glomerulus_to_Cluster, self.Cluster_to_Glomerulus, self.PNid_to_Cluster, self.Cluster_to_PNid, \
@@ -73,12 +131,884 @@ class Anatomical_analysis():
                                     'minor': self.plot_order_list_dict['minor'], 'major': ['KCg', "KCa'b'", "KCab"]}
         self.id_to_classification_dict = {"Glomerulus": self.PNid_to_Glomerulus, "Cluster": self.PNid_to_Cluster,
                                           "major": self.KCid_to_Subtype, 'minor': self.network.id_to_new_subtype}
-        # self.prepare_color_dict()
+        self.prepare_color_dict()
         self.fig_color_dict = self.Color_dict
         self.fig_color_dict["KCa'b'"] = 'gold'
         self.fig_color_dict[2] = 'gold'
         self.xyzi = []
 
+    def check_FAFB_bouton(self):
+        file_name = "FAFB_PN_num.xlsx"
+        data = pd.read_excel(file_name)
+        G_bouton_dict = {}
+        for G, bouton_num in zip(data['Glomerulus'],data['total bouton num']):
+            G_bouton_dict[G] = bouton_num
+        self.G_bouton_num_dict_FAFB = G_bouton_dict
+        # https://ars.els-cdn.com/content/image/1-s2.0-S0960982222009903-mmc2.csv, Obtained from Zheng et al., 2022
+        file_name = 'FAFB_bouton_claw_connection.csv'
+        data = pd.read_csv(file_name)
+        PNid_list_FAFB = data['pn_skid'].unique().tolist()
+        KCid_list_FAFB = data['kc_skid'].unique().tolist()
+        KC_names = Df(data=np.array([i.split(" ")[0] for i in data['kc_names'].unique().tolist()]),columns=['kc_names'])['kc_names'].unique()
+        G_list_FAFB = data['pn_type'].unique().tolist()
+        check_list = []
+        additional_list = []
+        for G in self.Classification_dict['Glomerulus']:
+            if G not in G_list_FAFB:
+                check_list.append(G)
+        for G in G_list_FAFB:
+            if G not in self.Classification_dict['Glomerulus']:
+                additional_list.append(G)
+        print(check_list)
+        print(additional_list)
+
+    def check_FAFB_skeleton(self):
+        path = 'FAFB_PN/'
+        swc_list = list(dict.fromkeys([int(i.split("_")[0]) for i in os.listdir(path) if '.swc' in i and 'FlyEM' not in i]).keys())
+        swc_name_list = list(dict.fromkeys([i for i in os.listdir(path) if '.swc' in i and 'FlyEM' not in i]).keys())
+
+        # neuropil = 'FAFB_CA(R)'
+        c = ConnectionSetting()
+        c.read_FAFB_connection_csv()
+        print(c.Glomerulus_to_PNid_FAFB['DC1'])
+        file = 'Pooled_PN_skeleton_FAFB_v2.csv'
+        data = pd.read_csv(f"{path}{file}")
+        data.columns = ['skeleton_id','treenode_id','parent_treenode_id','x','y','z','r']
+        neuronId_list = data['skeleton_id'].unique().tolist()
+        print(neuronId_list)
+        print(swc_list)
+        print(len(swc_list),len(neuronId_list))
+        missed_list = [swc_name_list[i] for i in range(len(swc_name_list)) if swc_list[i] not in neuronId_list]
+        print(missed_list)
+        print(len(missed_list))
+
+    def plot_density(self,KC_class_list,G_list):
+        path = 'FAFB_KC/'
+        neuropils = ['CA(R)']
+        neuropil = 'CA(R)'
+        self.load_neuropil(neuropils)
+        original_dis_dict = {}
+        pooled_result = []
+        # if self.template == 'FAFB':
+            # self.Classification_dict['Glomerulus'][self.Classification_dict['Glomerulus'].index("lvVM4")] = 'VM4'
+        with open(f"{path}KC_subtype_coordinates.pickle",'rb')as ff:
+            KC_subtype_TP_coordinate_collections = pickle.load(ff)
+        for KC_class in KC_class_list:
+            xyz_list = np.array(KC_subtype_TP_coordinate_collections[KC_class])        
+            self.spatial_distribution_dict[f'FAFB_TP_{KC_class}_CA(R)_0'] \
+            = self.calculate_spatial_distribution(xyz_list, neuropil,xyz_slice_num=[10,10,10])
+            pooled_result.append(self.spatial_distribution_dict[f'FAFB_TP_{KC_class}_CA(R)_0'].ravel().tolist())
+        path = 'FAFB_PN/'
+        with open(f"{path}Glomerulus_TP_coordinates.pickle",'rb')as ff:
+            Glomerulus_TP_coordinate_collections = pickle.load(ff)
+        for G in G_list:
+            xyz_list = np.array(Glomerulus_TP_coordinate_collections[G])      
+            self.spatial_distribution_dict[f'FAFB_TP_PN_{G}_CA(R)_0'] \
+            = self.calculate_spatial_distribution(xyz_list, neuropil,xyz_slice_num=[10,10,10])
+            pooled_result.append(self.spatial_distribution_dict[f'FAFB_TP_PN_{G}_CA(R)_0'].ravel().tolist())
+        total_num = len(KC_class_list) + len(G_list)
+        import distinctipy
+        colors = distinctipy.get_colors(n_colors=total_num)
+        x = [i for i in range(len(pooled_result[0]))]
+        for i in range(total_num):
+            plt.plot(x,pooled_result[i],label=(KC_class_list+G_list)[i])
+        plt.legend()
+        plt.show()
+    
+    def analyze_FAFB_spatial_distribution(self,t1='major',t2='major',d1='neurite',d2='neurite', slice_num=10, random_num=30, save=False):
+        '''
+        compared t1 with t2 and shuffled t2
+        for FAFB, 
+        t only include 'major', 'Cluster','Glomerulus'
+        d only include 'neurite', 'TP'
+        '''
+        color_cluster_dict = {1: 'red', 2: 'gold', 3: 'deepskyblue',"KCg":'red','KCab':'deepskyblue',"KCa'b'":'gold'}
+        g_color_dict = {G:color_cluster_dict[self.Glomerulus_to_Cluster[G]] for G in self.Glomerulus_to_Cluster}
+        color_cluster_dict.update(g_color_dict)
+        path = 'FAFB_KC/'
+        neuropils = ['CA(R)']
+        neuropil = 'CA(R)'
+        self.load_neuropil(neuropils)
+        if 'lvVM4' in self.Classification_dict['Glomerulus']:
+            self.Classification_dict['Glomerulus'].pop(self.Classification_dict['Glomerulus'].index("lvVM4"))
+
+        classification_1 = self.Classification_dict[t1]
+        classification_2 = self.Classification_dict[t2]
+        original_sim_dict = {}
+        if t1 == 'major' or t2 =='major':
+            path = 'FAFB_KC/'
+            with open(f"{path}KC_subtype_{d1}_coordinates.pickle",'rb')as ff:
+                KC_subtype_coordinate_collections = pickle.load(ff)
+            for KC_class in self.Classification_dict['major']:
+                xyz_list = np.array(KC_subtype_coordinate_collections[KC_class])        
+                self.spatial_distribution_dict[f'FAFB_{d1}_{KC_class}_CA(R)_0'] \
+                = self.calculate_spatial_distribution(xyz_list, neuropil,xyz_slice_num=[slice_num,slice_num,slice_num])
+        if t1 == 'Cluster':
+            path = 'FAFB_PN/'
+            with open(f"{path}Glomerulus_{d1}_coordinates.pickle",'rb')as ff:
+                Glomerulus_TP_coordinate_collections = pickle.load(ff)
+            for cluster in [1,2,3]:
+                xyz_list = []
+                for G in self.Cluster_to_Glomerulus[cluster]:
+                    if G=='lvVM4':
+                        continue
+                    xyz_list += np.array(Glomerulus_TP_coordinate_collections[G]).tolist()
+                xyz_list = np.array(xyz_list)
+                self.spatial_distribution_dict[f'FAFB_{d1}_PN_{cluster}_CA(R)_0'] \
+                = self.calculate_spatial_distribution(xyz_list, neuropil,xyz_slice_num=[slice_num,slice_num,slice_num])
+        if t1 == 'Glomerulus':
+            path = 'FAFB_PN/'
+            with open(f"{path}Glomerulus_{d1}_coordinates.pickle",'rb')as ff:
+                Glomerulus_TP_coordinate_collections = pickle.load(ff)
+            for G in self.Classification_dict['Glomerulus']:
+                xyz_list = np.array(Glomerulus_TP_coordinate_collections[G])
+                self.spatial_distribution_dict[f'FAFB_{d1}_PN_{G}_CA(R)_0'] \
+                = self.calculate_spatial_distribution(xyz_list, neuropil,xyz_slice_num=[slice_num,slice_num,slice_num])
+        if t2 =='Glomerulus':
+            path = 'FAFB_PN/'
+            with open(f"{path}Glomerulus_{d2}_coordinates.pickle",'rb')as ff:
+                Glomerulus_TP_coordinate_collections = pickle.load(ff)
+            for G in self.Classification_dict['Glomerulus']:
+                xyz_list = np.array(Glomerulus_TP_coordinate_collections[G])
+                self.spatial_distribution_dict[f'FAFB_{d2}_PN_{G}_CA(R)_0'] \
+                = self.calculate_spatial_distribution(xyz_list, neuropil,xyz_slice_num=[slice_num,slice_num,slice_num])
+        sub1 = '' if t1 == 'major' else '_PN'
+        sub2 = '' if t2 == 'major' else '_PN'
+        for class_1 in classification_1:
+            for class_2 in classification_2:
+                sim = 1 - jensenshannon(np.ravel(self.spatial_distribution_dict[f'FAFB_{d1}{sub1}_{class_1}_CA(R)_0']),
+                                        np.ravel(self.spatial_distribution_dict[f'FAFB_{d2}{sub2}_{class_2}_CA(R)_0']))
+                original_sim_dict[(class_1,class_2)] = sim
+        print(original_sim_dict)
+        shuffled_sim_dict = {}
+        if t2 == 'major':
+            path = 'FAFB_KC/'
+            with open(f"{path}KC_subtype_{d2}_coordinates_shuffled.pickle",'rb')as ff:
+                KC_subtype_shuffled_coordinate_collections = pickle.load(ff)
+            for random_index in range(random_num):
+            # for random_index in KC_subtype_TP_shuffled_coordinate_collections:
+                KC_subtype_coordinate_collections = KC_subtype_shuffled_coordinate_collections[random_index]
+                for KC_class in self.Classification_dict['major']: 
+                    xyz_list = np.array(KC_subtype_coordinate_collections[KC_class])        
+                    self.spatial_distribution_dict[f"Shuffled{random_index}_{d2}_{KC_class}_{neuropil}_0"] \
+                    = self.calculate_spatial_distribution(xyz_list, neuropil, xyz_slice_num=[slice_num,slice_num,slice_num])
+                    for class_1 in classification_1: 
+                        if (class_1,KC_class) not in shuffled_sim_dict:
+                            shuffled_sim_dict[(class_1, KC_class)] = []
+                        sim = 1 - jensenshannon(np.ravel(self.spatial_distribution_dict[f"Shuffled{random_index}_{d2}_{KC_class}_{neuropil}_0"]),
+                                        np.ravel(self.spatial_distribution_dict[f'FAFB_{d1}{sub1}_{class_1}_CA(R)_0']))
+                        shuffled_sim_dict[(class_1, KC_class)].append(sim)
+        elif t2 =='Cluster':
+            path = 'FAFB_PN/'
+            with open(f"{path}Glomerulus_{d2}_coordinates_shuffled.pickle",'rb')as ff:
+                Glomerulus_coordinate_shuffled_collections = pickle.load(ff)
+            for random_index in range(random_num):            
+                Glomerulus_coordinate_collections = Glomerulus_coordinate_shuffled_collections[random_index]
+                for cluster in [1,2,3]:
+                    xyz_list = []
+                    for G in self.Cluster_to_Glomerulus[cluster]:
+                        if G == 'lvVM4':
+                            continue
+                        xyz_list += np.array(Glomerulus_coordinate_collections[G]).tolist()
+                    xyz_list = np.array(xyz_list)        
+                    self.spatial_distribution_dict[f"Shuffled{random_index}_{d2}_PN_{cluster}_{neuropil}_0"] \
+                    = self.calculate_spatial_distribution(xyz_list, neuropil,xyz_slice_num=[slice_num,slice_num,slice_num])
+                    for class_1 in classification_1:
+                        if (class_1,cluster) not in shuffled_sim_dict:
+                            shuffled_sim_dict[(class_1,cluster)] = []
+                        sim = 1 - jensenshannon(np.ravel(self.spatial_distribution_dict[f"Shuffled{random_index}_{d2}_PN_{cluster}_{neuropil}_0"]),
+                                        np.ravel(self.spatial_distribution_dict[f'FAFB_{d1}{sub1}_{class_1}_CA(R)_0']))
+                        if np.isnan(sim):
+                            print("NAN")
+                            continue
+                        shuffled_sim_dict[(class_1,cluster)].append(sim)
+        elif t2 == 'Glomerulus':
+            path = 'FAFB_PN/'
+            with open(f"{path}Glomerulus_{d2}_coordinates_shuffled.pickle",'rb')as ff:
+                Glomerulus_coordinate_shuffled_collections = pickle.load(ff)
+            for random_index in range(random_num):            
+                Glomerulus_coordinate_collections = Glomerulus_coordinate_shuffled_collections[random_index]
+                for cluster in self.Cluster_to_Glomerulus:
+                    for G in self.Cluster_to_Glomerulus[cluster]:
+                        xyz_list = np.array(Glomerulus_coordinate_collections[G])    
+                        self.spatial_distribution_dict[f"Shuffled{random_index}_{d2}_PN_{G}_{neuropil}_0"] \
+                        = self.calculate_spatial_distribution(xyz_list, neuropil,xyz_slice_num=[slice_num,slice_num,slice_num])
+                        for class_1 in classification_1:
+                            if (class_1,G) not in shuffled_sim_dict:
+                                shuffled_sim_dict[(class_1,G)] = []
+                            sim = 1 - jensenshannon(np.ravel(self.spatial_distribution_dict[f"Shuffled{random_index}_{d2}_PN_{G}_{neuropil}_0"]),
+                                            np.ravel(self.spatial_distribution_dict[f'FAFB_{d1}{sub1}_{class_1}_CA(R)_0']))
+                            if np.isnan(sim):
+                                print("NAN")
+                                continue
+                            shuffled_sim_dict[(class_1,G)].append(sim)
+        print(shuffled_sim_dict)
+        num_classes = len(classification_2)
+        if len(classification_1) > 20:
+            fig, axes = plt.subplots(nrows=num_classes, ncols=1, figsize=(12, 2 * num_classes), sharex=True)
+        else:
+            fig, axes = plt.subplots(nrows=num_classes, ncols=1, figsize=(5, 1.5 * num_classes), sharex=True)
+
+        # Loop over each KC_class and plot in its corresponding subplot
+        z_score_matrix = []
+        for idx, class_2 in enumerate(classification_2):
+            # Calculate z_scores for each glomerulus
+            z_score = [
+                (original_sim_dict[(class_1, class_2)] - np.average(shuffled_sim_dict[(class_1, class_2)])) / np.std(shuffled_sim_dict[(class_1, class_2)]) 
+                for class_1 in classification_1
+            ]
+            z_score_matrix.append(z_score)
+        z_score_matrix = np.array(z_score_matrix)
+        if t1 == 'Glomerulus':
+            data = z_score_matrix[0]
+            order_list = (-1 * data).argsort()  ## descending order
+            z_score_matrix = z_score_matrix[:,order_list]
+            sorted_glomeruli = [classification_1[i] for i in order_list]
+            for idx, class_2 in enumerate(classification_2):
+            # Plot in the specific subplot
+                axes[idx].bar(x=[i for i in range(len(classification_1))], height=z_score_matrix[idx], color='k')
+                axes[idx].set_xticks([i for i in range(len(classification_1))])
+                axes[idx].set_xticklabels([i for i in sorted_glomeruli], rotation=90,fontsize=14)
+                axes[idx].set_ylabel(f"{class_2}")
+                axes[idx].tick_params(axis='y', labelsize=16)  # Set font size for x-tick labels  
+                axes[idx].spines['bottom'].set_linewidth(1.5)  # X-axis
+                axes[idx].spines['left'].set_linewidth(1.5)  # Y-axis
+                axes[idx].spines['top'].set_linewidth(1.5)  # X-axis
+                axes[idx].spines['right'].set_linewidth(1.5)  # Y-axis
+                axes[idx].axhline(y=2, color='gray', linestyle='--')
+                axes[idx].axhline(y=-2, color='gray', linestyle='--')               
+                    # Color tick labels based on the glomerulus cluster
+            for tick_label, glomerulus in zip(axes[idx].get_xticklabels(), sorted_glomeruli):
+                color = color_cluster_dict.get(glomerulus, 'black')  # Default to black if cluster is not in the dictionary
+                tick_label.set_color(color)
+                print(tick_label, glomerulus, color, self.Glomerulus_to_Cluster[glomerulus])
+        else:
+            for idx, class_2 in enumerate(classification_2):
+            # Plot in the specific subplot
+                axes[idx].bar(x=[i for i in range(len(classification_1))], height=z_score_matrix[idx], color='k')
+                axes[idx].set_xticks([i for i in range(len(classification_1))])
+                                    # fontsize = self.fontdict['tick']['fontsize']
+                axes[idx].set_xticklabels([i for i in classification_1], fontsize=self.fontdict['tick']['fontsize'])
+                axes[idx].set_ylabel(f"{class_2}", fontsize=self.fontdict['label']['fontsize'])
+                ymin, ymax = np.min(z_score_matrix[idx]), np.max(z_score_matrix[idx])
+                axes[idx].set_yticks([round(ymin*0.8),round(ymax*0.8)])                
+                axes[idx].set_yticklabels([round(ymin*0.8),round(ymax*0.8)], fontsize=self.fontdict['tick']['fontsize'])                
+                if ymin < -10000 or ymax > 10000:
+                    import matplotlib.ticker as ticker
+                    axes[idx].yaxis.set_major_formatter(ticker.ScalarFormatter())
+                    axes[idx].yaxis.get_major_formatter().set_scientific(True)     
+                axes[idx].spines['bottom'].set_linewidth(1.5)  # X-axis
+                axes[idx].spines['left'].set_linewidth(1.5)  # Y-axis
+                axes[idx].spines['top'].set_linewidth(1.5)  # X-axis
+                axes[idx].spines['right'].set_linewidth(1.5)  # Y-axis
+                axes[idx].axhline(y=2, color='gray', linestyle='--')
+                axes[idx].axhline(y=-2, color='gray', linestyle='--')
+        if save:
+            plt.savefig(f'Final_figures_summary/Q3_FAFB_{t1}_{d1}_{t2}_{d2}_zscore.svg')
+            plt.close()
+        
+        else:
+            plt.show()
+
+    def transform_STL_to_OBJ(self,neuropil='MB(R)'):
+        neuropil_space = trimesh.load(f'{self.neuropil_path}{neuropil}.stl')
+        neuropil_space.export(f'{self.neuropil_path}{neuropil}.obj')  # Export to .obj, .ply, etc.
+
+    def load_neuropil(self, neuropils):
+        for neuropil in neuropils:
+            if neuropil == 'whole brain':
+                neuropil = 'ebo_ns_instbs_20081209.surf'
+            if neuropil not in self.neuropil_space_dict:
+                neuropil_space = trimesh.load(f'{self.neuropil_path}{neuropil}.obj')
+                self.neuropil_space_dict[neuropil] = neuropil_space
+
+    def plot_FAFB_neuron(self, target='neurite',neuropils=['AL(R)','MB(R)','LH(R)']):
+        path = 'FAFB_PN/'
+        color_cluster_dict = {1: 'red', 2: 'gold', 3: 'deepskyblue',"KCg":'red','KCab':'deepskyblue',"KCa'b'":'gold'}
+        g_color_dict = {G:color_cluster_dict[self.Glomerulus_to_Cluster[G]] for G in self.Glomerulus_to_Cluster}
+        color_cluster_dict.update(g_color_dict)
+        self.load_neuropil(neuropils)
+        self.visualize_neuropil(create_new=True,obj=neuropils)
+        with open(f"{path}Glomerulus_{target}_coordinates_all.pickle",'rb')as ff:
+            Glomerulus_coordinate_collections = pickle.load(ff)
+        cluster_poold_dict = {1:[],2:[],3:[]}
+        for G in Glomerulus_coordinate_collections:
+            cluster_poold_dict[self.Glomerulus_to_Cluster[G]] += Glomerulus_coordinate_collections[G].tolist()
+        print(len(cluster_poold_dict[1]),len(cluster_poold_dict[2]),len(cluster_poold_dict[3]))
+        for cluster in cluster_poold_dict:
+            if color_cluster_dict[cluster] == 'red':
+                color = (1.0, 0, 0)
+            elif color_cluster_dict[cluster] =='gold':
+                color = (1.0, 0.843, 0)
+            elif color_cluster_dict[cluster] == 'deepskyblue':
+                color = (0, 0.749, 1)
+            self.visualize_neuron(np.array(cluster_poold_dict[cluster][::10],dtype=int),color)
+        self.visualize_mlab(True)        
+
+
+
+
+
+    def plot_FAFB_PN_KC_density(self, shuffled=False, target='synapse'):
+        path = 'FAFB_PN/'
+        # fig = plt.figure()
+        # ax = fig.add_subplot(1, 1, 1, projection='3d')
+        neuropil = 'CA(R)'
+        self.load_neuropil(['CA(R)','MB(R)'])
+        cmap_list = ['Reds','Wistia','Blues']
+        self.visualize_neuropil(create_new=True,obj=['CA(R)','MB(R)'])
+        if not shuffled:
+            with open(f"{path}Glomerulus_{target}_coordinates.pickle",'rb')as ff:
+                Glomerulus_coordinate_collections = pickle.load(ff)
+        else:
+            with open(f"{path}Glomerulus_{target}_coordinates_shuffled.pickle",'rb')as ff:
+                Glomerulus_coordinate_collections = pickle.load(ff)[1]
+        color_dict = {1:'red',2:'gold', 3:'deepskyblue'}
+        for cluster, cmap in zip([1,2,3],cmap_list):
+            xyz_list = []
+            for G in self.Cluster_to_Glomerulus[cluster]:
+                if G == 'lvVM4': ## not in FAFB
+                    continue
+                xyz_list += np.array(Glomerulus_coordinate_collections[G]).tolist()
+            xyz_list = np.array(xyz_list)
+            self.spatial_distribution_dict[f'FAFB_{target}_PN{cluster}_{neuropil}_0'] \
+            = self.calculate_spatial_distribution(xyz_list, neuropil)
+        # plt.show()
+            self.visualize_density_by_density(self.spatial_distribution_dict[f'FAFB_{target}_PN{cluster}_{neuropil}_0'], cmap=cmap,
+                                           contour_num=4,obj='CA(R)',template='FAFB')
+        path = 'FAFB_KC/'
+        if not shuffled:
+            with open(f"{path}KC_subtype_{target}_coordinates.pickle",'rb')as ff:
+                KC_subtype_coordinate_collections = pickle.load(ff)
+        else:
+            with open(f"{path}KC_subtype_{target}_coordinates_shuffled.pickle",'rb')as ff:
+                KC_subtype_coordinate_collections = pickle.load(ff)[1]
+        for KC_class, color, cmap in zip(['KCg',"KCa'b'","KCab"],['red','gold','deepskyblue'],cmap_list):
+            xyz_list = np.array(KC_subtype_coordinate_collections[KC_class])        
+            # sc = ax.scatter(xyz_list[:,0],xyz_list[:,1],xyz_list[:,2], c=color,s=1,edgecolors='none')
+            self.spatial_distribution_dict[f'FAFB_{target}_{KC_class}_CA(R)_0'] \
+            = self.calculate_spatial_distribution(xyz_list, neuropil)
+        # plt.show()
+            self.visualize_density_by_density(self.spatial_distribution_dict[f'FAFB_{target}_{KC_class}_CA(R)_0'], cmap=cmap,
+                                           contour_num=5,obj='CA(R)',template='FAFB')
+        self.visualize_mlab(True)
+
+    def plot_FAFB_TP_PN(self, shuffled=False, target='neurite'):
+        path = 'FAFB_PN/'
+        # fig = plt.figure()
+        # ax = fig.add_subplot(1, 1, 1, projection='3d')
+        neuropil = 'CA(R)'
+        self.load_neuropil(['CA(R)','MB(R)'])
+        cmap_list = ['Reds','Wistia','Blues']
+        self.visualize_neuropil(create_new=True,obj=['CA(R)','MB(R)'])
+        if not shuffled:
+            with open(f"{path}Glomerulus_{target}_coordinates.pickle",'rb')as ff:
+                Glomerulus_coordinate_collections = pickle.load(ff)
+        else:
+            with open(f"{path}Glomerulus_{target}_coordinates_shuffled.pickle",'rb')as ff:
+                Glomerulus_coordinate_collections = pickle.load(ff)[1]
+        color_dict = {1:'red',2:'gold', 3:'deepskyblue'}
+        for cluster, cmap in zip([1,2,3],cmap_list):
+            xyz_list = []
+            for G in self.Cluster_to_Glomerulus[cluster]:
+                if G == 'lvVM4': ## not in FAFB
+                    continue
+                xyz_list += np.array(Glomerulus_coordinate_collections[G]).tolist()
+            xyz_list = np.array(xyz_list)
+            self.spatial_distribution_dict[f'FAFB_{target}_PN{cluster}_{neuropil}_0'] \
+            = self.calculate_spatial_distribution(xyz_list, neuropil)
+        # plt.show()
+            self.visualize_density_by_density(self.spatial_distribution_dict[f'FAFB_{target}_PN{cluster}_{neuropil}_0'], cmap=cmap,
+                                           contour_num=4,obj='CA(R)',template='FAFB')
+        self.visualize_mlab(True)
+
+    def plot_FAFB_TP_KC(self, target='neurite'):
+        path = 'FAFB_KC/'
+        # fig = plt.figure()
+        # ax = fig.add_subplot(1, 1, 1, projection='3d')
+        neuropil = 'CA(R)'
+        self.load_neuropil(['CA(R)','MB(R)'])
+        cmap_list = ['Reds','Wistia','Blues']
+
+        self.visualize_neuropil(create_new=True,obj=['CA(R)','MB(R)'])
+        with open(f"{path}KC_subtype_{target}_coordinates.pickle",'rb')as ff:
+            KC_subtype_coordinate_collections = pickle.load(ff)
+        for KC_class, color, cmap in zip(['KCg',"KCa'b'","KCab"],['red','gold','deepskyblue'],cmap_list):
+            xyz_list = np.array(KC_subtype_coordinate_collections[KC_class])        
+            # sc = ax.scatter(xyz_list[:,0],xyz_list[:,1],xyz_list[:,2], c=color,s=1,edgecolors='none')
+            self.spatial_distribution_dict[f'FAFB_{target}_{KC_class}_CA(R)_0'] \
+            = self.calculate_spatial_distribution(xyz_list, neuropil)
+        # plt.show()
+            self.visualize_density_by_density(self.spatial_distribution_dict[f'FAFB_{target}_{KC_class}_CA(R)_0'], cmap=cmap,
+                                           contour_num=5,obj='CA(R)',template='FAFB')
+        self.visualize_mlab(True)
+    
+    def merge_FAFB_KC_synapses(self):
+        synapse_g_file = 'FAFB_KCg_post_synapses.csv'
+        synapse_ab_file = 'FAFB_KCab_post_synapses.csv'
+        synapse_apbp_file = 'FAFB_KCapbp_post_synapses.csv'
+        synapse_path = 'FAFB_synapse/'
+        synapse_data = pd.read_csv(f"{synapse_path}{synapse_g_file}").merge(pd.read_csv(f"{synapse_path}{synapse_ab_file}"),how='outer').merge(pd.read_csv(f"{synapse_path}{synapse_apbp_file}"), how='outer')
+        synapse_data.to_csv(f"{synapse_path}FAFB_KC_post_synapses.csv")
+        
+    def collect_FAFB_PN_KC_synapse(self):
+        rd.seed(100)
+        self.load_neuropil(["CA(R)"])
+        c = ConnectionSetting()
+        c.read_FAFB_connection_csv()
+        if 'lvVM4' in c.G_list:
+            c.G_list.pop(c.G_list.index("lvVM4"))
+        synapse_file = 'FAFB_KC_post_synapses.csv'
+        synapse_path = 'FAFB_synapse/'
+        synapse_data = pd.read_csv(f"{synapse_path}{synapse_file}").drop(columns=['Unnamed: 0'])
+        print(synapse_data.head())
+        synapse_data.columns = ['pre_skeleton_id','pre_treenode_id','post_skeleton_id','post_treenode_id']
+        PN_file = 'Pooled_PN_skeleton_FAFB.csv'
+        PN_path = 'FAFB_PN/'
+        PN_data = pd.read_csv(f"{PN_path}{PN_file}")
+        PN_data.columns = ['skeleton_id','treenode_id','parent_treenode_id','x','y','z','r']
+        PN_neuronId_list = [neuronId for neuronId in PN_data['skeleton_id'].unique().tolist() if neuronId in c.PNid_to_Glomerulus_FAFB if c.PNid_to_Glomerulus_FAFB[neuronId] in c.G_list]
+        Glomerulus_synapse_coordinate_collections = {G:[] for G in c.G_list}
+        KC_file = 'Pooled_KC_skeleton_FAFB.csv'
+        KC_path = 'FAFB_KC/'
+        KC_data = pd.read_csv(f"{KC_path}{KC_file}")
+        KC_data.columns = ['skeleton_id','treenode_id','parent_treenode_id','x','y','z','r']
+        KC_neuronId_list = [neuronId for neuronId in KC_data['skeleton_id'].unique().tolist() if neuronId in c.KCid_to_Subtype_FAFB if c.KCid_to_Subtype_FAFB[neuronId] in ["KCg","KCa'b'","KCab"]]
+        KC_subtype_synapse_coordinate_collections = {'KCab':[],"KCa'b'":[],"KCg":[]}
+        mask_PN = synapse_data['pre_skeleton_id'].isin(PN_neuronId_list)
+        mask_KC = synapse_data['post_skeleton_id'].isin(KC_neuronId_list)
+        filtered_data = synapse_data[mask_PN & mask_KC]
+        PN_treenode_coordinates_dict = PN_data.set_index('treenode_id')[['x', 'y', 'z']].apply(list, axis=1).to_dict()
+        Pooled_collections = []
+        Glomerulus_PN_num = Counter()
+        for neuronId in PN_neuronId_list:
+            mask_sn = filtered_data['pre_skeleton_id'] == neuronId
+            single_neuron_data = filtered_data[mask_sn]
+            G = c.PNid_to_Glomerulus_FAFB[neuronId]
+            Glomerulus_PN_num[G] += 1
+            xyz_list = [PN_treenode_coordinates_dict[nodeId] for nodeId in single_neuron_data['pre_treenode_id']]
+            Glomerulus_synapse_coordinate_collections[G] += xyz_list
+            Pooled_collections.append(xyz_list)
+        for G in Glomerulus_synapse_coordinate_collections:
+            Glomerulus_synapse_coordinate_collections[G] = np.array(Glomerulus_synapse_coordinate_collections[G])
+        with open(f"{PN_path}Glomerulus_synapse_coordinates.pickle",'wb')as ff:
+            pickle.dump(Glomerulus_synapse_coordinate_collections,ff)
+        Glomerulus_synapse_coordinate_shuffled_collections = {}
+        index_list = [G for G in Glomerulus_PN_num for _ in range(Glomerulus_PN_num[G])]
+        for random_index in range(100):
+            rd.shuffle(index_list)
+            Glomerulus_synapse_coordinate_collections = {G:[] for G in Glomerulus_PN_num}
+            for neuronIndex, G in enumerate(index_list):
+                Glomerulus_synapse_coordinate_collections[G] += Pooled_collections[neuronIndex]
+            Glomerulus_synapse_coordinate_shuffled_collections[random_index] = Glomerulus_synapse_coordinate_collections.copy()
+        with open(f"{PN_path}Glomerulus_synapse_coordinates_shuffled.pickle",'wb')as ff:
+            pickle.dump(Glomerulus_synapse_coordinate_shuffled_collections,ff)
+        ## KC
+        KC_treenode_coordinates_dict = KC_data.set_index('treenode_id')[['x', 'y', 'z']].apply(list, axis=1).to_dict()
+        Pooled_collections = []
+        KC_subtype_num = Counter()
+        for neuronId in KC_neuronId_list:
+            mask_sn = filtered_data['post_skeleton_id'] == neuronId
+            single_neuron_data = filtered_data[mask_sn]
+            KC_class = c.KCid_to_Subtype_FAFB[neuronId]
+            KC_subtype_num [KC_class] += 1
+            xyz_list = [KC_treenode_coordinates_dict[nodeId] for nodeId in single_neuron_data['post_treenode_id']]
+            KC_subtype_synapse_coordinate_collections[KC_class] += xyz_list
+            Pooled_collections.append(xyz_list)
+        for KC_class in KC_subtype_synapse_coordinate_collections:
+            KC_subtype_synapse_coordinate_collections[KC_class] = np.array(KC_subtype_synapse_coordinate_collections[KC_class])
+        with open(f"{KC_path}KC_subtype_synapse_coordinates.pickle",'wb')as ff:
+            pickle.dump(KC_subtype_synapse_coordinate_collections,ff)
+        KC_subtype_synapse_coordinate_shuffled_collections = {}
+        index_list = [KC_class for KC_class in KC_subtype_num for _ in range(KC_subtype_num[KC_class])]
+        for random_index in range(100):
+            rd.shuffle(index_list)
+            KC_subtype_synapse_coordinate_collections = {KC_class:[] for KC_class in KC_subtype_num}
+            for neuronIndex, KC_class in enumerate(index_list):
+                KC_subtype_synapse_coordinate_collections[KC_class] += Pooled_collections[neuronIndex]
+            KC_subtype_synapse_coordinate_shuffled_collections[random_index] = KC_subtype_synapse_coordinate_collections.copy()
+        with open(f"{KC_path}KC_subtype_synapse_coordinates_shuffled.pickle",'wb')as ff:
+            pickle.dump(KC_subtype_synapse_coordinate_shuffled_collections,ff)
+
+    def collect_FAFB_PN_neurite_all_neuropil(self):
+        rd.seed(100)
+        file = 'Pooled_PN_skeleton_FAFB.csv'
+        path = 'FAFB_PN/'
+        data = pd.read_csv(f"{path}{file}")
+        data.columns = ['skeleton_id','treenode_id','parent_treenode_id','x','y','z','r']
+        neuronId_list = data['skeleton_id'].unique().tolist()
+        self.load_neuropil(["CA(R)"])
+        c = ConnectionSetting()
+        c.read_FAFB_connection_csv()
+        if 'lvVM4' in c.G_list:
+            c.G_list.pop(c.G_list.index("lvVM4"))
+        Glomerulus_neurite_coordinate_collections = {G:[] for G in c.G_list}
+        Pooled_collections = []
+        ## check parent
+        non_exist = ""
+        non_exist_num = 0
+        error=''
+        Glomerulus_PN_num = Counter()
+        for neuronIndex,neuronId in enumerate(neuronId_list):
+            try:
+                G = c.PNid_to_Glomerulus_FAFB[neuronId]
+                if G not in c.G_list:
+                    continue
+            except:
+                non_exist += f"{neuronId}\n"
+                non_exist_num = non_exist_num +1
+                print('non_exist:', non_exist_num)
+                continue
+            Glomerulus_PN_num[G] += 1
+            mask = data['skeleton_id'] == neuronId
+            filtered_data = data[mask]
+            nodeId_list = filtered_data['treenode_id'].values.tolist()
+            parent_list = [parent.replace(" ","") for parent in filtered_data['parent_treenode_id'].values.tolist()]
+            node_num = len(nodeId_list)
+            root_index = 0
+            for nodeIndex in range(len(parent_list)):
+                if len(parent_list[nodeIndex].replace(" ","")) == 0:
+                    root_index = nodeIndex
+                    print(neuronId,'get soma index',root_index)
+            x,y,z = filtered_data['x'].values,filtered_data['y'].values,filtered_data['z'].values
+            xyz_list = np.array([x,y,z]).transpose()
+            # Calculate the number of samples to select (10% of the total)
+            sample_size = int(0.1 * len(xyz_list))
+            # Randomly select 10% of the data without replacement
+            random_indices = np.random.choice(len(xyz_list), sample_size, replace=False)
+            xyz_list = xyz_list[random_indices]
+            filtered_xyz_list = xyz_list
+            Glomerulus_neurite_coordinate_collections[G] += filtered_xyz_list.tolist()
+            Pooled_collections.append(filtered_xyz_list.tolist())
+
+        for G in Glomerulus_neurite_coordinate_collections:
+            Glomerulus_neurite_coordinate_collections[G] = np.array(Glomerulus_neurite_coordinate_collections[G])
+        with open(f"{path}Non_exist_skid_in_connection_data.csv",'wt')as ff:
+            ff.write(non_exist)
+        with open(f"{path}error_id.csv",'wt')as ff:
+            ff.write(error)
+        with open(f"{path}Glomerulus_neurite_coordinates_all.pickle",'wb')as ff:
+            pickle.dump(Glomerulus_neurite_coordinate_collections,ff)
+        Glomerulus_neurite_coordinate_shuffled_collections = {}
+        index_list = [G for G in Glomerulus_PN_num for _ in range(Glomerulus_PN_num[G])]
+        for random_index in range(100):
+            rd.shuffle(index_list)
+            Glomerulus_neurite_coordinate_collections = {G:[] for G in Glomerulus_PN_num}
+            for neuronIndex, G in enumerate(index_list):
+                Glomerulus_neurite_coordinate_collections[G] += Pooled_collections[neuronIndex]
+            Glomerulus_neurite_coordinate_shuffled_collections[random_index] = Glomerulus_neurite_coordinate_collections.copy()
+        with open(f"{path}Glomerulus_neurite_coordinates_shuffled_all.pickle",'wb')as ff:
+            pickle.dump(Glomerulus_neurite_coordinate_shuffled_collections,ff)
+
+
+    def collect_FAFB_PN_neurite(self):
+        rd.seed(100)
+        file = 'Pooled_PN_skeleton_FAFB.csv'
+        path = 'FAFB_PN/'
+        data = pd.read_csv(f"{path}{file}")
+        data.columns = ['skeleton_id','treenode_id','parent_treenode_id','x','y','z','r']
+        neuronId_list = data['skeleton_id'].unique().tolist()
+        self.load_neuropil(["CA(R)"])
+        c = ConnectionSetting()
+        c.read_FAFB_connection_csv()
+        if 'lvVM4' in c.G_list:
+            c.G_list.pop(c.G_list.index("lvVM4"))
+        Glomerulus_neurite_coordinate_collections = {G:[] for G in c.G_list}
+        Pooled_collections = []
+        ## check parent
+        non_exist = ""
+        non_exist_num = 0
+        error=''
+        Glomerulus_PN_num = Counter()
+        for neuronIndex,neuronId in enumerate(neuronId_list):
+            try:
+                G = c.PNid_to_Glomerulus_FAFB[neuronId]
+                if G not in c.G_list:
+                    continue
+            except:
+                non_exist += f"{neuronId}\n"
+                non_exist_num = non_exist_num +1
+                print('non_exist:', non_exist_num)
+                continue
+            Glomerulus_PN_num[G] += 1
+            mask = data['skeleton_id'] == neuronId
+            filtered_data = data[mask]
+            nodeId_list = filtered_data['treenode_id'].values.tolist()
+            parent_list = [parent.replace(" ","") for parent in filtered_data['parent_treenode_id'].values.tolist()]
+            node_num = len(nodeId_list)
+            root_index = 0
+            for nodeIndex in range(len(parent_list)):
+                if len(parent_list[nodeIndex].replace(" ","")) == 0:
+                    root_index = nodeIndex
+                    print(neuronId,'get soma index',root_index)
+            x,y,z = filtered_data['x'].values,filtered_data['y'].values,filtered_data['z'].values
+            xyz_list = np.array([x,y,z]).transpose()
+            # Calculate the number of samples to select (10% of the total)
+            sample_size = int(0.1 * len(xyz_list))
+            # Randomly select 10% of the data without replacement
+            random_indices = np.random.choice(len(xyz_list), sample_size, replace=False)
+            xyz_list = xyz_list[random_indices]
+            filtered_xyz_list = self.filtered_coordinates(xyz_list,'CA(R)')
+            Glomerulus_neurite_coordinate_collections[G] += filtered_xyz_list.tolist()
+            Pooled_collections.append(filtered_xyz_list.tolist())
+
+        for G in Glomerulus_neurite_coordinate_collections:
+            Glomerulus_neurite_coordinate_collections[G] = np.array(Glomerulus_neurite_coordinate_collections[G])
+        with open(f"{path}Non_exist_skid_in_connection_data.csv",'wt')as ff:
+            ff.write(non_exist)
+        with open(f"{path}error_id.csv",'wt')as ff:
+            ff.write(error)
+        with open(f"{path}Glomerulus_neurite_coordinates.pickle",'wb')as ff:
+            pickle.dump(Glomerulus_neurite_coordinate_collections,ff)
+        Glomerulus_neurite_coordinate_shuffled_collections = {}
+        index_list = [G for G in Glomerulus_PN_num for _ in range(Glomerulus_PN_num[G])]
+        for random_index in range(100):
+            rd.shuffle(index_list)
+            Glomerulus_neurite_coordinate_collections = {G:[] for G in Glomerulus_PN_num}
+            for neuronIndex, G in enumerate(index_list):
+                Glomerulus_neurite_coordinate_collections[G] += Pooled_collections[neuronIndex]
+            Glomerulus_neurite_coordinate_shuffled_collections[random_index] = Glomerulus_neurite_coordinate_collections.copy()
+        with open(f"{path}Glomerulus_neurite_coordinates_shuffled.pickle",'wb')as ff:
+            pickle.dump(Glomerulus_neurite_coordinate_shuffled_collections,ff)
+
+    def collect_FAFB_PN_TP(self):
+        
+        rd.seed(100)
+        file = 'Pooled_PN_skeleton_FAFB.csv'
+        path = 'FAFB_PN/'
+        data = pd.read_csv(f"{path}{file}")
+        data.columns = ['skeleton_id','treenode_id','parent_treenode_id','x','y','z','r']
+        neuronId_list = data['skeleton_id'].unique().tolist()
+        mesh = trimesh.load(f'{path}FAFB_CA(R).stl')
+        self.neuropil_space_dict['FAFB_CA(R)'] = mesh
+        c = ConnectionSetting()
+        if 'lvVM4' in c.G_list:
+            c.G_list.pop(c.G_list.index("lvVM4"))
+        c.read_FAFB_connection_csv()       
+        Glomerulus_TP_coordinate_collections = {G:[] for G in c.G_list}
+        Pooled_collections = []
+        ## check parent
+        non_exist = ""
+        non_exist_num = 0
+        error=''
+        Glomerulus_PN_num = Counter()
+        for neuronIndex,neuronId in enumerate(neuronId_list):
+            try:
+                G = c.PNid_to_Glomerulus_FAFB[neuronId]
+                if G not in c.G_list:
+                    continue
+            except:
+                non_exist += f"{neuronId}\n"
+                non_exist_num = non_exist_num +1
+                print('non_exist:', non_exist_num)
+                continue
+            Glomerulus_PN_num[G] += 1
+            mask = data['skeleton_id'] == neuronId
+            filtered_data = data[mask]
+            nodeId_list = filtered_data['treenode_id'].values.tolist()
+            parent_list = [parent.replace(" ","") for parent in filtered_data['parent_treenode_id'].values.tolist()]
+            node_num = len(nodeId_list)
+            root_index = 0
+            for nodeIndex in range(len(parent_list)):
+                if len(parent_list[nodeIndex].replace(" ","")) == 0:
+                    root_index = nodeIndex
+                    print(neuronId,'get soma index',root_index)
+            x,y,z = filtered_data['x'].values,filtered_data['y'].values,filtered_data['z'].values
+            xyz_list = np.array([x,y,z]).transpose().tolist()
+            new_parent_list = []
+            son_list = [[] for _ in range(node_num)]
+            for nodeIndex in range(node_num):
+                if nodeIndex == root_index:
+                    new_parent_list.append(-1)
+                    continue
+                parent_tree_node = int(parent_list[nodeIndex])
+                try:
+                    parent_node_index = nodeId_list.index(parent_tree_node)
+                except:
+                    error += f'{neuronId}/n'
+                    continue
+                new_parent_list.append(parent_node_index)
+                son_list[parent_node_index].append(nodeIndex)
+            parent_list = new_parent_list
+            xyz_list = np.array(xyz_list)
+            TP_id_list = [i for i in range(node_num) if len(son_list[i])==0]
+            filtered_xyz_list = self.filtered_coordinates(xyz_list[TP_id_list,:],'FAFB_CA(R)')
+            Glomerulus_TP_coordinate_collections[G] += filtered_xyz_list.tolist()
+            Pooled_collections.append(filtered_xyz_list.tolist())
+
+        for G in Glomerulus_TP_coordinate_collections:
+            Glomerulus_TP_coordinate_collections[G] = np.array(Glomerulus_TP_coordinate_collections[G])
+        with open(f"{path}Non_exist_skid_in_connection_data.csv",'wt')as ff:
+            ff.write(non_exist)
+        with open(f"{path}error_id.csv",'wt')as ff:
+            ff.write(error)
+        with open(f"{path}Glomerulus_TP_coordinates.pickle",'wb')as ff:
+            pickle.dump(Glomerulus_TP_coordinate_collections,ff)
+        Glomerulus_TP_coordinate_shuffled_collections = {}
+        index_list = [G for G in Glomerulus_PN_num for _ in range(Glomerulus_PN_num[G])]
+        for random_index in range(100):
+            rd.shuffle(index_list)
+            Glomerulus_TP_coordinate_collections = {G:[] for G in Glomerulus_PN_num}
+            for neuronIndex, G in enumerate(index_list):
+                Glomerulus_TP_coordinate_collections[G] += Pooled_collections[neuronIndex]
+            Glomerulus_TP_coordinate_shuffled_collections[random_index] = Glomerulus_TP_coordinate_collections.copy()
+        with open(f"{path}Glomerulus_TP_coordinates_shuffled.pickle",'wb')as ff:
+            pickle.dump(Glomerulus_TP_coordinate_shuffled_collections,ff)
+    
+    def collect_FAFB_KC_neurite(self):
+        file = 'Pooled_KC_skeleton_FAFB.csv'
+        path = 'FAFB_KC/'
+        data = pd.read_csv(f"{path}{file}")
+        data.columns = ['skeleton_id','treenode_id','parent_treenode_id','x','y','z','r']
+        neuronId_list = data['skeleton_id'].unique().tolist()
+        self.load_neuropil(['CA(R)'])
+        c = ConnectionSetting()
+        c.read_FAFB_connection_csv()
+        KC_subtype_neurite_coordinate_collections = {'KCab':[],"KCa'b'":[],"KCg":[]}
+        Pooled_collections = []
+        ## check parent
+        non_exist = ""
+        non_exist_num = 0
+        KC_subtype_num = Counter()
+        for neuronIndex,neuronId in enumerate(neuronId_list):
+            try:
+                KC_class = c.KCid_to_Subtype_FAFB[neuronId]
+                if KC_class == "Other":
+                    continue
+            except:
+                non_exist += f"{neuronId}\n"
+                non_exist_num = non_exist_num +1
+                print('non_exist:', non_exist_num)
+                continue
+            KC_subtype_num[KC_class] += 1
+            mask = data['skeleton_id'] == neuronId
+            filtered_data = data[mask]
+            x,y,z = filtered_data['x'].values,filtered_data['y'].values,filtered_data['z'].values
+            xyz_list = np.array([x,y,z]).transpose()
+            # Calculate the number of samples to select (10% of the total)
+            sample_size = int(0.1 * len(xyz_list))
+            # Randomly select 10% of the data without replacement
+            random_indices = np.random.choice(len(xyz_list), sample_size, replace=False)
+            xyz_list = xyz_list[random_indices]
+            filtered_xyz_list = self.filtered_coordinates(xyz_list,'CA(R)')
+            KC_subtype_neurite_coordinate_collections[KC_class] += filtered_xyz_list.tolist()
+            Pooled_collections.append(filtered_xyz_list.tolist())
+        for KC_class in KC_subtype_neurite_coordinate_collections:
+            KC_subtype_neurite_coordinate_collections[KC_class] = np.array(KC_subtype_neurite_coordinate_collections[KC_class])
+        with open(f"{path}Non_exist_skid_in_connection_data.csv",'wt')as ff:
+            ff.write(non_exist)
+        with open(f"{path}KC_subtype_neurite_coordinates.pickle",'wb')as ff:
+            pickle.dump(KC_subtype_neurite_coordinate_collections,ff)
+        
+        KC_subtype_neurite_coordinate_shuffled_collections = {}        
+        rd.seed(100)
+        index_list = [KC_class for KC_class in KC_subtype_num for _ in range(KC_subtype_num[KC_class])]
+        for random_index in range(100):
+            KC_subtype_neurite_coordinate_collections = {}
+            rd.shuffle(index_list)
+            for KC_class in KC_subtype_num:
+                KC_subtype_neurite_coordinate_collections[KC_class] = []
+            for neuronIndex, KC_class in enumerate(index_list):
+                KC_subtype_neurite_coordinate_collections[KC_class] += Pooled_collections[neuronIndex]
+            KC_subtype_neurite_coordinate_shuffled_collections[random_index] = KC_subtype_neurite_coordinate_collections.copy()
+        with open(f"{path}KC_subtype_neurite_coordinates_shuffled.pickle",'wb')as ff:
+            pickle.dump(KC_subtype_neurite_coordinate_shuffled_collections,ff)
+
+    def collect_FAFB_KC_TP(self):
+        file = 'Pooled_KC_skeleton_FAFB.csv'
+        path = 'FAFB_KC/'
+        data = pd.read_csv(f"{path}{file}")
+        data.columns = ['skeleton_id','treenode_id','parent_treenode_id','x','y','z','r']
+        neuronId_list = data['skeleton_id'].unique().tolist()
+        mesh = trimesh.load(f'{path}FAFB_CA(R).stl')
+        self.neuropil_space_dict['FAFB_CA(R)'] = mesh
+        c = ConnectionSetting()
+        c.read_FAFB_connection_csv()
+        print('connection',len(c.KCid_list_FAFB))
+        print('skeleton',len(neuronId_list))
+        KC_subtype_TP_coordinate_collections = {'KCab':[],"KCa'b'":[],"KCg":[]}
+        Pooled_collections = []
+        ## check parent
+        non_exist = ""
+        non_exist_num = 0
+        KC_subtype_num = Counter()
+        for neuronIndex,neuronId in enumerate(neuronId_list):
+            try:
+                KC_class = c.KCid_to_Subtype_FAFB[neuronId]
+                if KC_class == "Other":
+                    continue
+            except:
+                non_exist += f"{neuronId}\n"
+                non_exist_num = non_exist_num +1
+                print('non_exist:', non_exist_num)
+                continue
+            KC_subtype_num[KC_class] += 1
+            mask = data['skeleton_id'] == neuronId
+            filtered_data = data[mask]
+            nodeId_list = filtered_data['treenode_id'].values.tolist()
+            parent_list = [parent.replace(" ","") for parent in filtered_data['parent_treenode_id'].values.tolist()]
+            node_num = len(nodeId_list)
+            root_index = 0
+            for nodeIndex in range(len(parent_list)):
+                if len(parent_list[nodeIndex].replace(" ","")) == 0:
+                    root_index = nodeIndex
+                    print(neuronId,'get soma index',root_index)
+            x,y,z = filtered_data['x'].values,filtered_data['y'].values,filtered_data['z'].values
+            xyz_list = np.array([x,y,z]).transpose().tolist()
+            new_parent_list = []
+            son_list = [[] for _ in range(node_num)]
+            for nodeIndex in range(node_num):
+                if nodeIndex == root_index:
+                    new_parent_list.append(-1)
+                    continue
+                parent_tree_node = int(parent_list[nodeIndex])
+                parent_node_index = nodeId_list.index(parent_tree_node)
+                new_parent_list.append(parent_node_index)
+                son_list[parent_node_index].append(nodeIndex)
+            parent_list = new_parent_list
+            reconstructed_sequence = Depth_first_search_iterative(root_index,son_list)
+                # Create mapping from original index to DFS index
+            index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(reconstructed_sequence)}
+            
+            # Reconstruct the parent list based on DFS order
+            new_new_parent_list = [-1]
+            for nodeIndex in range(1, node_num):
+                old_index = reconstructed_sequence[nodeIndex]
+                old_parent = new_parent_list[old_index]
+                new_parent = index_map[old_parent] if old_parent != -1 else -1
+                new_new_parent_list.append(new_parent)
+            parent_list = new_new_parent_list
+            son_list = [[] for _ in range(node_num)]
+            for node_index in range(node_num):
+                if parent_list[node_index] == -1:
+                    continue
+                son_list[parent_list[node_index]].append(node_index)
+            xyz_list = np.array(xyz_list)[reconstructed_sequence,:]
+            TP_id_list = [i for i in range(node_num) if len(son_list[i])==0]
+            filtered_xyz_list = self.filtered_coordinates(xyz_list[TP_id_list,:],'FAFB_CA(R)')
+            KC_subtype_TP_coordinate_collections[KC_class] += filtered_xyz_list.tolist()
+            Pooled_collections.append(filtered_xyz_list.tolist())
+        for KC_class in KC_subtype_TP_coordinate_collections:
+            KC_subtype_TP_coordinate_collections[KC_class] = np.array(KC_subtype_TP_coordinate_collections[KC_class])
+        with open(f"{path}Non_exist_skid_in_connection_data.csv",'wt')as ff:
+            ff.write(non_exist)
+        with open(f"{path}KC_subtype_TP_coordinates.pickle",'wb')as ff:
+            pickle.dump(KC_subtype_TP_coordinate_collections,ff)
+        
+        KC_subtype_TP_coordinate_shuffled_collections = {}        
+        rd.seed(100)
+        index_list = [KC_class for KC_class in KC_subtype_num for _ in range(KC_subtype_num[KC_class])]
+        for random_index in range(30):
+            KC_subtype_TP_coordinate_collections = {}
+            rd.shuffle(index_list)
+            for KC_class in KC_subtype_num:
+                KC_subtype_TP_coordinate_collections[KC_class] = []
+            for neuronIndex, KC_class in enumerate(index_list):
+                KC_subtype_TP_coordinate_collections[KC_class] += Pooled_collections[neuronIndex]
+            KC_subtype_TP_coordinate_shuffled_collections[random_index] = KC_subtype_TP_coordinate_collections.copy()
+        with open(f"{path}KC_subtype_TP_coordinates_shuffled.pickle",'wb')as ff:
+            pickle.dump(KC_subtype_TP_coordinate_shuffled_collections,ff)
+        
     def get_bouton_connection_number_ratio(self):
         PN_to_KC_weight_threshold = 3
         network = ConnectionSetting()
@@ -100,6 +1030,9 @@ class Anatomical_analysis():
                 if weight[i][j] > 0:
                     G_total_connect_num_dict[G] += 1
                     Cluster_connect_num_dict[C] += 1
+
+        print(G_total_connect_num_dict)
+        print(Cluster_connect_num_dict)
 
         network.transform_PN_KC_connection_to_G_KC_connection()
         fontdict = {"fontsize": 28}
@@ -139,14 +1072,16 @@ class Anatomical_analysis():
         pooled_data.to_excel("PN_bouton_connection_num.xlsx")
         pooled_data = pd.read_excel("PN_bouton_connection_num.xlsx")
 
-        # Group by 'Glomerulus' and calculate the sum and standard error of 'Connect num'
+        # Group by 'Glomerulus' and calculate the mean and standard error of 'ratio'
         grouped_data = pooled_data.groupby('Glomerulus')['Connect num']
+        # df_grouped = grouped_data.mean().reset_index()
         df_grouped = grouped_data.sum().reset_index()
         df_error = grouped_data.std().reset_index()
 
         # Define the color_dict to map colors to each glomerulus
         color_dict = {}
         for G in network.G_list:
+            print(Glomerulus_to_Cluster[G])
             if Glomerulus_to_Cluster[G] == 1:
                 color_dict[G] = 'red'
             elif Glomerulus_to_Cluster[G] == 2:
@@ -154,18 +1089,24 @@ class Anatomical_analysis():
             else:
                 color_dict[G] = 'deepskyblue'
 
+        # Sort the DataFrame in descending order based on the mean 'Ratio' values
         df_sorted = df_grouped.sort_values(by='Connect num', ascending=False)
 
         # Create a bar plot with error bars and custom colors for each glomerulus
         plt.figure(figsize=(15, 4.5))
         for glomerulus in df_sorted['Glomerulus']:
+            print(glomerulus)
             glomerulus_data = df_sorted[df_sorted['Glomerulus'] == glomerulus]
+            # plt.bar(glomerulus_data['Glomerulus'], glomerulus_data['Connect num'], yerr=df_error[df_error['Glomerulus'] == glomerulus]['Connect num'], capsize=5, alpha=0.7, ecolor='black', label=glomerulus, color='gray')
             plt.bar(glomerulus_data['Glomerulus'], glomerulus_data['Connect num'], label=glomerulus, color='gray',
                     alpha=0.7)
 
         # Create a bar plot with error bars
+        # plt.figure(figsize=(8, 6))
+        # plt.bar(df_sorted['Glomerulus'], df_sorted['Ratio'], yerr=df_error['Ratio'], capsize=5, alpha=0.7, ecolor='black',color=color,label=)
         plt.xlabel('Glomerulus', fontdict=fontdict)
         plt.ylabel('KC number', fontdict=fontdict)
+        # plt.title('Bar plot with descending order for each Glomerulus')
         plt.xticks(rotation=90, fontsize=tick_fontsize)
         ax = plt.gca()
         ax.spines['bottom'].set_linewidth(1.5)  # X-axis
@@ -181,11 +1122,19 @@ class Anatomical_analysis():
         plt.tight_layout()
         plt.show()
 
+        G_tmp = pooled_data['Glomerulus'].unique()
+        new_G_list = [G for G in network.G_list if G in G_tmp]
+        # new_G_list = sorted()
+        sns.barplot(data=pooled_data, x='Glomerulus', y='Connect num', order=new_G_list)
+        plt.show()
+
+        from pandas import DataFrame as Df
         data_collected = [[G, Glomerulus_to_Cluster[G], G_total_connect_num_dict[G]] for G in G_total_connect_num_dict]
         Df(data=np.array(data_collected), columns=['Glomerulus', 'Cluster', "Connect num"]).to_excel(
             "Glomerulus_Cluster_Connect.xlsx")
         data_collected = pd.read_excel("Glomerulus_Cluster_Connect.xlsx")
         sns.violinplot(data=data_collected, x='Cluster', y="Connect num")
+        # sns.violinplot(data=pooled_data,x='Cluster', y="Connect num")
 
         ax = plt.gca()
         ax.spines['bottom'].set_linewidth(1.5)  # X-axis
@@ -201,48 +1150,7 @@ class Anatomical_analysis():
         plt.tight_layout()
         plt.show()
 
-        ### Ratio
-        # Group by 'Glomerulus' and calculate the mean and standard error of 'ratio'
-        grouped_data = pooled_data.groupby('Glomerulus')['Ratio']
-        df_grouped = grouped_data.mean().reset_index()
-        df_error = grouped_data.std().reset_index()
-        # Sort the DataFrame in descending order based on the mean 'Ratio' values
-        df_sorted = df_grouped.sort_values(by='Ratio', ascending=False)
-        plt.figure(figsize=(15, 4.5))
-        for glomerulus in df_sorted['Glomerulus']:
-            glomerulus_data = df_sorted[df_sorted['Glomerulus'] == glomerulus]
-            plt.bar(glomerulus_data['Glomerulus'], glomerulus_data['Ratio'], yerr=df_error[df_error['Glomerulus'] == glomerulus]['Ratio'], capsize=5, alpha=0.7, ecolor='black', label=glomerulus, color='gray')
-        plt.xlabel('Glomerulus', fontdict=fontdict)
-        plt.ylabel('KC number/bouton', fontdict=fontdict)
-        plt.xticks(rotation=90, fontsize=tick_fontsize)
-        ax = plt.gca()
-        ax.spines['bottom'].set_linewidth(1.5)  # X-axis
-        ax.spines['left'].set_linewidth(1.5)  # Y-axis
-        ax.spines['top'].set_linewidth(1.5)  # X-axis
-        ax.spines['right'].set_linewidth(1.5)  # Y-axis
-
-        G_list = df_sorted['Glomerulus'].values.tolist()
-        for x_tick_index, xtick in enumerate(ax.get_xticklabels()):
-            xtick.set_color(color_dict[G_list[x_tick_index]])
-        plt.yticks([0, 20, 40], fontsize=tick_fontsize)
-        plt.ylim([-2, 45])
-        plt.tight_layout()
-        plt.show()
-
-        sns.violinplot(data=pooled_data,x='Cluster', y="Ratio")
-
-        ax = plt.gca()
-        ax.spines['bottom'].set_linewidth(1.5)  # X-axis
-        ax.spines['left'].set_linewidth(1.5)  # Y-axis
-        ax.spines['top'].set_linewidth(1.5)  # X-axis
-        ax.spines['right'].set_linewidth(1.5)  # Y-axis
-
-        plt.xlabel("Cluster", fontdict=fontdict)
-        plt.ylabel("KC number/bouton", fontdict=fontdict)
-        plt.xticks(fontsize=tick_fontsize)
-        plt.yticks([0, 30, 60], fontsize=tick_fontsize)
-        plt.ylim([-2, 60])
-        plt.tight_layout()
+        sns.violinplot(data=pooled_data, y='Connect num')
         plt.show()
 
     def get_divided_CA_along_x_z_by_x(self):
@@ -251,13 +1159,13 @@ class Anatomical_analysis():
             path = 'D:/eFlyPlotv2p1/Data/'
         elif 'Linux' in platform.platform():
             path = '/mnt/DS416j/charng/eFlyPlotv2p1/Data/'
-        neuropil = trimesh.load(f'{path}FlyEM_neuropil/{neuropil_name}.obj')
+        neuropil = trimesh.load(f'FlyEM_neuropil/{neuropil_name}.obj')
         x, y, z = neuropil.vertices.T
         pca = PCA(n_components=2)
         X = np.array([x, z]).transpose()
         pca.fit(X)
         X_fit = pca.transform(X)
-        neuropil = trimesh.load(f'{path}FlyEM_neuropil/MB(R).obj')
+        neuropil = trimesh.load(f'FlyEM_neuropil/MB(R).obj')
         x, y, z = neuropil.vertices.T
         X_MB = pca.transform(np.array([x, z]).transpose())
         plt.plot(X_MB[:, 0], X_MB[:, 1], '.', color='gray')
@@ -271,6 +1179,7 @@ class Anatomical_analysis():
         plt.plot([min_x, max_x], [z_min_x, z_max_x], 'r')
         plt.axis('equal')
         plt.savefig("DV_calyx_visualization.png", dpi=500)
+        plt.show()
         plt.close()
         # z = mx + b
         line = [[min_x, z_min_x], [max_x, z_max_x]]
@@ -329,7 +1238,7 @@ class Anatomical_analysis():
 
     def prepare_color_dict(self):
         self.Color_dict = {1: 'r', 2: '#e2bb56', 3: 'deepskyblue', "KCg": 'r', "KCa'b'": '#e2bb56',
-                           "KCab": 'deepskyblue'}
+                           "KCab": 'deepskyblue','1':'r','2':'#e2bb56','3':'deepskyblue'}
         for G in self.Glomerulus_to_Cluster:
             self.Color_dict[G] = self.Color_dict[self.Glomerulus_to_Cluster[G]]
 
@@ -537,6 +1446,7 @@ class Anatomical_analysis():
                         self.spatial_distribution_dict[
                             f'Shuffled{i}_neuron_PN_cluster_{PN_cluster}_{neuropil}_{omit_ratio}'] \
                             = self.calculate_spatial_distribution(tmp, neuropil)
+
         return
 
     def add_KC_neuron_spatial_distribution_dict(self, omit_ratio=0.8, neuropil_list=['CA(R)', 'PED(R)'], shuffle_num=30,
@@ -921,18 +1831,6 @@ class Anatomical_analysis():
                     neuropil = trimesh.load(f'D:/eFlyPlotv2p1/Data/FlyEM_neuropil/{neuropil_file}.obj')
                     x, y, z = neuropil.vertices.T
                     mlab.triangular_mesh(x, y, z, neuropil.faces, color=(0.9, 0.9, 0.9), opacity=0.5)
-                    # values_n = get_obj_vertices(data_path + neuropil).T
-                    # kde_n = stats.gaussian_kde(values_n)
-                    # # Create a regular 3D grid with 50 points in each dimension
-                    # xmin_n, ymin_n, zmin_n = values_n.min(axis=1)
-                    # xmax_n, ymax_n, zmax_n = values_n.max(axis=1)
-                    # xi_n, yi_n, zi_n = np.mgrid[xmin_n:xmax_n:np.complex(0, xyz_number[0]),
-                    #                    ymin_n:ymax_n:np.complex(0, xyz_number[1]),
-                    #                    zmin_n:zmax_n:np.complex(0, xyz_number[2])]
-                    # # Evaluate the KDE on a regular grid...
-                    # coords_n = np.vstack([item.ravel() for item in [xi_n, yi_n, zi_n]])
-                    # density_n = kde_n(coords_n).reshape(xi_n.shape)
-                    # mlab.contour3d(xi_n, yi_n, zi_n, density_n, opacity=0.1, color=(0.9, 0.9, 0.9))
         density_collection = []
         for values, cmap in zip(values_collection, cmap_collection):
             kde = stats.gaussian_kde(values)
@@ -964,13 +1862,18 @@ class Anatomical_analysis():
 
     def read_swc(self, file_name, omit_ratio=0):
         xyz = []
-        with open(file_name, "rt")as ff:
-            for line in ff:
-                if line.find("#") != -1 or rd.random() < omit_ratio:
-                    continue
-                groups = line[:-1].split(" ")
-                x, y, z = float(groups[2]), float(groups[3]), float(groups[4])
-                xyz.append([x, y, z])
+        neu = pd.read_csv(file_name, delim_whitespace=True, header=None, comment='#')
+        neu = neu.sort_values(by=[0]).reset_index(drop=True)
+        neu.columns = ['nodeId','annotation','x','y','z','r','parent']
+        x,y,z = neu['x'],neu['y'],neu['z']
+        xyz = np.array([x,y,z]).transpose().tolist()
+        # with open(file_name, "rt")as ff:
+        #     for line in ff:
+        #         if line.find("#") != -1 or rd.random() < omit_ratio:
+        #             continue
+        #         groups = line[:-1].split(" ")
+        #         x, y, z = float(groups[2]), float(groups[3]), float(groups[4])
+        #         xyz.append([x, y, z])
         return xyz
 
     def rename_KC_subtype(self, string):
@@ -1081,26 +1984,10 @@ class Anatomical_analysis():
                  np.std(condition_based_dict[condition][1])])
         pooled_data = pd.DataFrame(data=pooled_data, columns=['Condition', 'FlyEM', 'Shuffled mean', 'Shuffled STD'])
         if result_type == "JS":
-            pooled_data.to_csv("JS_analysis_summary_0711.csv")
+            pooled_data.to_csv("JS_analysis_summary.csv")
         elif result_type == "KL":
-            pooled_data.to_csv("KL_analysis_summary_0711.csv")
+            pooled_data.to_csv("KL_analysis_summary.csv")
 
-    # def create_condition_collection(self,condition,condition_collection):
-    #     if condition == 'Glomerulus' or condition == 'Cluster':
-    #         condition_collection.append([True, 'PN'])
-    #         if condition == 'Glomerulus':
-    #
-    #         for i in range(1,4):
-    #         condition_collection.append([False, 'PN_cluster_1'])
-    #             condition_collection.append([False, 'PN_cluster_2'])
-    #             condition_collection.append([False, 'PN_cluster_3'])
-    #         if condition == 'Cluster':
-    #             condition_collection.append([False, 'PN_cluster_1'])
-    #             condition_collection.append([False, 'PN_cluster_2'])
-    #             condition_collection.append([False, 'PN_cluster_3'])
-    #
-    #
-    #     return condition_collection
 
     def get_condition_neuropil(self,string):
         neuropil = ''
@@ -1185,7 +2072,7 @@ class Anatomical_analysis():
         :return:
         '''
 
-        df = pd.read_csv(f"JS_analysis_summary_0711.csv")
+        df = pd.read_csv(f"JS_analysis_summary.csv")
         df['condition 1'], df['condition 2'], df['neuropil'] = self.summary_data_rename(df)
         mask1 = df['condition 1'].str.contains(t1)
         mask2 = df['condition 2'].str.contains(t2)
@@ -1241,8 +2128,6 @@ class Anatomical_analysis():
         g.ax_col_dendrogram.set_visible(False)
         plt.show()
 
-    123
-
     def analyze_spatial_distribution_bar(self, t1='Glomerulus', t2='Glomerulus', d1='neuron', d2='neuron',
                                          neuropil='CA(R)', datatype='JS',synapse_related_to_KC_1=False,synapse_related_to_KC_2=False,
                                          JS_clustermap=False):
@@ -1269,13 +2154,13 @@ class Anatomical_analysis():
         else:
             KC2 = 'F'
         file_name = f'{t1}_{d1}_{t2}_{d2}_{KC1}_{KC2}_{neuropil}'
-        if os.path.isfile('JS_analysis_summary_rename.csv'):
-            df = pd.read_csv('JS_analysis_summary_rename.csv')
+        if os.path.isfile('Result/JS_analysis_summary_rename.csv'):
+            df = pd.read_csv('Result/JS_analysis_summary_rename.csv')
             df.drop('Unnamed: 0', axis=1, inplace=True)
         else:
-            df = pd.read_csv(f"JS_analysis_summary_0711.csv")
+            df = pd.read_csv(f"Result/JS_analysis_summary.csv")
             df['condition 1'], df['condition 2'], df['neuropil'] = self.summary_data_rename(df)
-            df.to_csv('JS_analysis_summary_rename.csv')
+            df.to_csv('Result/JS_analysis_summary_rename.csv')
         mask00 = df['condition 1'].str.contains('KCg-s4')
         mask01 = df['condition 2'].str.contains('KCg-s4')
         mask1 = df['condition 1'].str.contains(t1)
@@ -1293,13 +2178,7 @@ class Anatomical_analysis():
             filtered_df = df[mask1 & mask2 & mask3 & mask4 & mask5 & ~mask6 & mask7 & ~mask00 & ~mask01].values.tolist()
         else:
             filtered_df = df[mask1 & mask2 & mask3 & mask4 & mask5 & ~mask6 & ~mask7 & ~mask00 & ~mask01].values.tolist()
-        # print(t1,t2,d1,d2,synapse_related_to_KC_1,synapse_related_to_KC_2, neuropil)
-        # print(filtered_df[0:3])
-        # input()
-        # return
         Classification_dict = self.Classification_dict
-
-        # Classification_dict['minor'].pop(Classification_dict['minor'].index("KCg-s4"))
         real_matrix = np.zeros((len(Classification_dict[t1]), len(Classification_dict[t2])))
         shuffled_matrix = np.zeros(real_matrix.shape)
         z_score_matrix = np.zeros(real_matrix.shape)
@@ -1330,6 +2209,8 @@ class Anatomical_analysis():
             real_matrix[index_1][index_2] = filtered_df[i][2]
             shuffled_matrix[index_1][index_2] = filtered_df[i][3]
             z_score_matrix[index_1][index_2] = (filtered_df[i][2] - filtered_df[i][3]) / filtered_df[i][4]
+            print(c1,c2,real_matrix[index_1][index_2],shuffled_matrix[index_1][index_2],z_score_matrix[index_1][index_2])
+
 
         if JS_clustermap:
             color_1 = [self.Color_dict[i] for i in Classification_dict[t1]]
@@ -1357,40 +2238,6 @@ class Anatomical_analysis():
             g.ax_col_dendrogram.set_visible(False)
             plt.show()
 
-            # g=sns.clustermap(data=real_matrix,method='ward',xticklabels=Classification_dict[t1],
-            #                yticklabels=Classification_dict[t2], col_colors=color_2,row_colors=color_1,
-            #                  vmax=np.percentile(real_matrix, 90), vmin=np.percentile(real_matrix, 10),
-            #                  cmap='bwr')
-            # g.ax_row_dendrogram.set_visible(False)
-            # g.ax_col_dendrogram.set_visible(False)
-            # plt.show()
-            #
-            # g=sns.clustermap(data=real_matrix,method='complete',xticklabels=Classification_dict[t1],
-            #                yticklabels=Classification_dict[t2], col_colors=color_2,row_colors=color_1,
-            #                 vmax=np.percentile(real_matrix, 90), vmin=np.percentile(real_matrix, 10),
-            #                  cmap='bwr')
-            # g.ax_row_dendrogram.set_visible(False)
-            # g.ax_col_dendrogram.set_visible(False)
-            # plt.show()
-
-            # g=sns.clustermap(data=real_matrix,method='single',xticklabels=Classification_dict[t1],
-            #                yticklabels=Classification_dict[t2], col_colors=color_2,row_colors=color_1,
-            #                vmax=np.percentile(real_matrix, 90), vmin=np.percentile(real_matrix, 10),
-            #                cmap='bwr')
-            # g.ax_row_dendrogram.set_visible(False)
-            # g.ax_col_dendrogram.set_visible(False)
-            # plt.show()
-
-            # g=sns.clustermap(data=real_matrix,method='average',xticklabels=Classification_dict[t1],
-            #                yticklabels=Classification_dict[t2], col_colors=color_2,row_colors=color_1,
-            #                  vmax=np.percentile(real_matrix, 90), vmin=np.percentile(real_matrix, 10),
-            #                  cmap='bwr')
-            # g.ax_row_dendrogram.set_visible(False)
-            # g.ax_col_dendrogram.set_visible(False)
-            # plt.show()
-
-
-
         row_c = []
         for G in Classification_dict[t1]:
             row_c.append(self.Color_dict[G])
@@ -1398,12 +2245,6 @@ class Anatomical_analysis():
         col_c = []
         for G in Classification_dict[t2]:
             col_c.append(self.Color_dict[G])
-
-        # for classification_index, classification in enumerate(Classification_dict[t1]):
-        #
-        #     plt.bar(x=[i for i in range(len(Classification_dict[t2]))], height=z_score_matrix[classification_index])
-        #     plt.title(classification)
-        #     plt.show()
 
         if t1 == 'major':
             order_list = [0, 1, 2]
@@ -1483,82 +2324,6 @@ class Anatomical_analysis():
 
 
 
-    # def get_spatial_spatial_correlation(self):
-    #     path_1 = f"{self.result_fig2}Glomerulus_Cluster_CA(R)/"
-    #     f1 = 'Glomerulus_synapse_Cluster_synapse_F_F_CA(R)_zscore_summary.xlsx'
-    #     path_2 = f"{self.result_fig2}Glomerulus_Cluster_LH(R)/"
-    #     f2 = 'Glomerulus_synapse_Cluster_synapse_F_F_LH(R)_zscore_summary.xlsx'
-    #     file_name = f'{t1}_{d1}_{t2}_{d2}_{KC1}_{KC2}_{neuropil}'
-    #     df = pd.read_csv(f"JS_analysis_summary_0711.csv")
-    #     df['condition 1'], df['condition 2'], df['neuropil'] = self.summary_data_rename(df)
-    #     df.to_csv('JS_analysis_summary_rename.csv')
-    #     mask00 = df['condition 1'].str.contains('KCg-s4')
-    #     mask01 = df['condition 2'].str.contains('KCg-s4')
-    #     mask1 = df['condition 1'].str.contains(t1)
-    #     mask2 = df['condition 2'].str.contains(t2)
-    #     mask3 = df['condition 1'].str.contains(d1)
-    #     mask4 = df['condition 2'].str.contains(d2)
-    #     mask5 = df['neuropil'] == neuropil_1
-    #     mask6 = df['condition 1'].str.contains('to_KC')
-    #     mask7 = df['condition 2'].str.contains('to_KC')
-    #     if synapse_related_to_KC_1 and synapse_related_to_KC_2:
-    #         filtered_df = df[mask1 & mask2 & mask3 & mask4 & mask5 & mask6 & mask7 & ~mask00 & ~mask01].values.tolist()
-    #     elif synapse_related_to_KC_1:
-    #         filtered_df = df[mask1 & mask2 & mask3 & mask4 & mask5 & mask6 & ~mask7 & ~mask00 & ~mask01].values.tolist()
-    #     elif synapse_related_to_KC_2:
-    #         filtered_df = df[mask1 & mask2 & mask3 & mask4 & mask5 & ~mask6 & mask7 & ~mask00 & ~mask01].values.tolist()
-    #     else:
-    #         filtered_df = df[
-    #             mask1 & mask2 & mask3 & mask4 & mask5 & ~mask6 & ~mask7 & ~mask00 & ~mask01].values.tolist()
-    #
-    #     Classification_dict = self.Classification_dict
-    #     real_matrix = np.zeros((len(Classification_dict[t1]), len(Classification_dict[t2])))
-    #     shuffled_matrix = np.zeros(real_matrix.shape)
-    #     z_score_matrix = np.zeros(real_matrix.shape)
-    #     for i in range(len(filtered_df)):
-    #         c1 = filtered_df[i][-3].split("_")[-1]
-    #         c2 = filtered_df[i][-2].split("_")[-1]
-    #         if t1 == 'Cluster':
-    #             c1 = int(c1)
-    #         if t2 == 'Cluster':
-    #             c2 = int(c2)
-    #         index_1 = Classification_dict[t1].index(c1)
-    #         index_2 = Classification_dict[t2].index(c2)
-    #         real_matrix[index_1][index_2] = filtered_df[i][2]
-    #         shuffled_matrix[index_1][index_2] = filtered_df[i][3]
-    #         z_score_matrix[index_1][index_2] = (filtered_df[i][2] - filtered_df[i][3]) / filtered_df[i][4]
-    #
-    #     if t2 == 'minor':
-    #         classification_index = Classification_dict[t2].index('KCg-m')
-    #     elif t2 == 'major':
-    #         classification_index = Classification_dict[t2].index("KCg")
-    #     123
-    #     data = []
-    #     for G_index, G in enumerate(Classification_dict[t1]):
-    #         data.append([z_score_matrix[G_index, classification_index], self.cellular_connection_pref_dict[G],
-    #                      self.synaptic_connection_pref_dict[G]])
-    #     data = np.array(data)
-    #     slope, intercept, r_value, p_value, std_err = linregress(data[:, 0], data[:, 1])
-    #     y_pred = intercept + slope * data[:, 0]
-    #     plt.scatter(data[:, 0], data[:, 1])
-    #     plt.plot(data[:, 0], y_pred, 'k-')
-    #     r_squared = r_value ** 2
-    #     r_squared_text = f'r\u00b2 = {r_squared:.3f}'
-    #     if p_value < 0.001:
-    #         p_value_text = f'p < 0.001'
-    #     else:
-    #         p_value_text = f'p = {p_value:.3f}'
-    #     plt.text(0.05, 0.9, r_squared_text, transform=plt.gca().transAxes, fontsize=14)
-    #     plt.text(0.05, 0.85, p_value_text, transform=plt.gca().transAxes, fontsize=14)
-    #     plt.xticks(fontsize=18)
-    #     plt.yticks(fontsize=18)
-    #     plt.xlabel("Z score in spatial pref.", fontdict={'fontsize': 22})
-    #     plt.ylabel("Z score in connection pref.", fontdict={'fontsize': 22})
-    #     plt.tight_layout()
-    #     plt.savefig(f"{self.result_fig2}synapse_spatial_connection_cellular_relationship.png", dpi=500,
-    #                 transparent=True)
-    #     plt.close()
-
 
     def analyze_spatial_distribution_connection_preference(self, t1='Glomerulus', t2='major', d1='synapse',
                                                            d2='synapse', synapse_related_to_KC_1=True,synapse_related_to_KC_2=False,
@@ -1574,9 +2339,8 @@ class Anatomical_analysis():
 
         :return:
         '''
-        ############### 須注意~!!!!!!!!!!!!!!!!!!!!!!!!!!!!還需要再加入考慮有沒有KC這個字眼XD
         file_name = f'{t1}_{d1}_{t2}_{d2}_{neuropil}'
-        df = pd.read_csv(f"JS_analysis_summary_0711.csv")
+        df = pd.read_csv(f"Result/JS_analysis_summary.csv")
         df['condition 1'], df['condition 2'], df['neuropil'] = self.summary_data_rename(df)
         mask00 = df['condition 1'].str.contains('KCg-s4')
         mask01 = df['condition 2'].str.contains('KCg-s4')
@@ -1962,8 +2726,8 @@ class Anatomical_analysis():
                 sns.violinplot(data=result_input_num[mask], y=t2, x='Connection number', palette=self.fig_color_dict,
                                orient='h', cut=0, bw=0.5, ax=ax)
                 plt.yticks(fontsize=self.fontdict['tick']['fontsize'])
-                ytick_labels = ax.get_yticks().tolist()
-                xtick_labels = ax.get_xticks().tolist()
+                ytick_labels = ax.get_yticks()
+                xtick_labels = ax.get_xticks()
                 ax.set_yticklabels([self.rename_KC_subtype(i) for i in self.Classification_dict[t2]],
                                    fontsize=self.fontdict['tick']['fontsize'])
                 plt.ylabel("")
@@ -1987,8 +2751,8 @@ class Anatomical_analysis():
                 sns.violinplot(data=result_weight[mask], y=t2, x='Weight', palette=self.fig_color_dict,
                                orient='h', cut=0, bw=0.5, ax=ax)
                 plt.yticks(fontsize=self.fontdict['tick']['fontsize'])
-                ytick_labels = ax.get_yticks().tolist()
-                xtick_labels = ax.get_xticks().tolist()
+                ytick_labels = ax.get_yticks()
+                xtick_labels = ax.get_xticks()
                 ax.set_yticklabels([self.rename_KC_subtype(i) for i in self.Classification_dict[t2]],
                                    fontsize=self.fontdict['tick']['fontsize'])
                 plt.ylabel("")
@@ -2012,8 +2776,8 @@ class Anatomical_analysis():
                 sns.violinplot(data=result_input_ratio[mask], y=t2, x='Input weight ratio', palette=self.fig_color_dict,
                                orient='h', cut=0, bw=0.5, ax=ax)
                 plt.yticks(fontsize=self.fontdict['tick']['fontsize'])
-                ytick_labels = ax.get_yticks().tolist()
-                xtick_labels = ax.get_xticks().tolist()
+                ytick_labels = ax.get_yticks()
+                xtick_labels = ax.get_xticks()
                 ax.set_yticklabels([self.rename_KC_subtype(i) for i in self.Classification_dict[t2]],
                                    fontsize=self.fontdict['tick']['fontsize'])
                 plt.ylabel("")
@@ -2043,8 +2807,8 @@ class Anatomical_analysis():
                 sns.violinplot(data=result_output_num[mask], y=t2, x='Connection number', palette=self.fig_color_dict,
                                orient='h', cut=0, bw=0.5, ax=ax)
                 plt.yticks(fontsize=self.fontdict['tick']['fontsize'])
-                ytick_labels = ax.get_yticks().tolist()
-                xtick_labels = ax.get_xticks().tolist()
+                ytick_labels = ax.get_yticks()
+                xtick_labels = ax.get_xticks()
                 ax.set_yticklabels([i for i in self.Classification_dict[t2]],
                                    fontsize=self.fontdict['tick']['fontsize'])
                 plt.ylabel("")
@@ -2070,8 +2834,8 @@ class Anatomical_analysis():
                                palette=self.fig_color_dict,
                                orient='h', cut=0, bw=0.5, ax=ax)
                 plt.yticks(fontsize=self.fontdict['tick']['fontsize'])
-                ytick_labels = ax.get_yticks().tolist()
-                xtick_labels = ax.get_xticks().tolist()
+                ytick_labels = ax.get_yticks()
+                xtick_labels = ax.get_xticks()
                 ax.set_yticklabels([i for i in self.Classification_dict[t2]],
                                    fontsize=self.fontdict['tick']['fontsize'])
                 plt.ylabel("")
@@ -2286,7 +3050,7 @@ class Anatomical_analysis():
         plt.show()
         plt.close()
 
-    def visualize_density_by_density(self, density, create_new=False, obj = 'LH(R)', cmap='Reds',contour_num=4):
+    def visualize_density_by_density(self, density, create_new=False, obj = 'LH(R)', cmap='Reds',contour_num=4, template='FlyEM'):
         if create_new:
             mlab.clf()
             v = mlab.figure()
@@ -2294,7 +3058,7 @@ class Anatomical_analysis():
             mlab.options.backend = 'envisage'
         if obj:
             tvtk.OBJImporter()
-            neuropil = trimesh.load(f'D:/eFlyPlotv2p1/Data/FlyEM_neuropil/{obj}.obj')
+            neuropil = trimesh.load(f'{template}_neuropil/{obj}.obj')
             x, y, z = neuropil.vertices.T
             # mesh = mlab.triangular_mesh(x, y, z, neuropil.faces, color=(0.9, 0.9, 0.9), opacity=0.5)
         x_num, y_num, z_num = density.shape
@@ -2309,7 +3073,7 @@ class Anatomical_analysis():
     def visualize_neuron(self,xyz, color):
         size = 100
         # Display the points with the specified size and color
-        mlab.points3d(xyz[:,0],xyz[:,1],xyz[:,2], color=color, scale_factor=size)
+        mlab.points3d(xyz[:,0],xyz[:,1],xyz[:,2], color=color, scale_factor=size, mode='sphere')
         return
 
     def visualize_density(self, xyz, create_new=False, obj = ['MB(R)'],xyz_slice_num=[20,20,20],cmap='Reds',
@@ -2349,7 +3113,7 @@ class Anatomical_analysis():
         mlab.draw()
         mlab.show()
 
-    def visualize_neuropil(self, obj = ['CA(R)', 'MB(R)'],create_new=False, smooth=False, color=(1,1,1),opacity=0.1):
+    def visualize_neuropil(self, obj = ['CA(R)', 'MB(R)'],create_new=False, smooth=False, color=(1,1,1),opacity=0.1,neuropil=None):
         if create_new:
             mlab.clf()
             v = mlab.figure()
@@ -2358,11 +3122,19 @@ class Anatomical_analysis():
         if obj:
             tvtk.OBJImporter()
             for neuropil_file in obj:
+                if neuropil_file == 'whole brain':
+                    neuropil_file = 'ebo_ns_instbs_20081209.surf'
+
                 neuropil = trimesh.load(f'{self.neuropil_path}{neuropil_file}.obj')
                 x, y, z = neuropil.vertices.T
                 mesh = mlab.triangular_mesh(x, y, z, neuropil.faces, color=color, opacity=opacity)
                 # if smooth:
                 #     mesh = mlab.pipeline.smooth(mesh)
+        if neuropil != None:
+            tvtk.OBJImporter()
+            x, y, z = neuropil.vertices.T
+            mesh = mlab.triangular_mesh(x, y, z, neuropil.faces, color=color, opacity=opacity)
+                
 
     def get_statistics_for_KC_PN_synapse_fix_KC(self,xyz_max_number=30):
         PN_to_KC_weight_threshold = 3
@@ -2527,3 +3299,11 @@ class Anatomical_analysis():
         # values = np.array([xi, yi, zi])
         values = np.array([xi, yi, zi])
         return values
+
+
+if __name__ == '__main__':
+    a = Anatomical_analysis(template='FAFB')
+    # a.collect_FAFB_PN_neurite_all_neuropil()
+    # a.plot_FAFB_TP_PN(target='neurite')
+    # a.plot_FAFB_TP_KC(target='neurite')
+    a.plot_FAFB_PN_KC_density(target='synapse')
