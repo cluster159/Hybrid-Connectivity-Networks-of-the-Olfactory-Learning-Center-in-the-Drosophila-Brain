@@ -13,8 +13,7 @@ https://drive.google.com/drive/folders/1AtFL13jMt5KM6ht_i9Sfs7Lm2Fhu30BP?usp=sha
 - Knaden, M., Strutz, A., Ahsan, J., Sachse, S., & Hansson, B. S. (2012). Spatial representation of odorant valence in an insect brain. Cell reports, 1(4), 392-399.
 
 ## Functional Data:
-- Mao, X., Ma, Q., Zhou, C., Chen, X., Zhang, H., Yang, J., ... & Xu, Y. (2014). DOOR 2.0: presenting operons and their functions through dynamic and integrated views. Nucleic acids research, 42(D1), D654-D659.
-
+- Münch, D., & Galizia, C. G. (2016). DoOR 2.0-comprehensive mapping of Drosophila melanogaster odorant responses. Scientific reports, 6(1), 21841.
 ## Connectomic Data:
 - Scheffer, L. K., Xu, C. S., Januszewski, M., Lu, Z., Takemura, S. Y., Hayworth, K. J., ... & Plaza, S. M. (2020). A connectome and analysis of the adult Drosophila central brain. elife, 9, e57443.
 - Zheng, Z., Li, F., Fisher, C., Ali, I. J., Sharifi, N., Calle-Schuler, S., ... & Bock, D. D. (2022). Structured sampling of olfactory input by the fly mushroom body. Current Biology, 32(15), 3334-3349.
